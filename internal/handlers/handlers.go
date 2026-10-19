@@ -10,22 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/adrianmo/go-nmea"
 )
-
-type GpsParser struct {
-	Data      *models.GPSData
-	Timestamp time.Time
-	RequestId int
-	Checksum  *string
-}
-
-type gpsResponse struct {
-	RequestId int     `json:"request_id"`
-	GGA       string  `json:"gga"`
-	Checksum  *string `json:"checksum"`
-}
 
 type loraResponse struct {
 	RequestId int     `json:"id"`
@@ -49,39 +34,13 @@ type PacketParser struct {
 	Checksum  *string
 }
 
-func (p *GpsParser) ParseGpsData(response string) error {
-	rawData := gpsResponse{}
-	if err := json.Unmarshal([]byte(response), &rawData); err != nil {
-		p.RequestId = rawData.RequestId
-		p.Checksum = rawData.Checksum
-	}
-
-	data, err := nmea.Parse(rawData.GGA)
-	if err != nil {
-		log.Fatalf("NMEA Gps data parsing failed: %v", err)
-		return err
-	}
-	gps := models.GPSData{}
-	if data.DataType() == nmea.TypeGGA {
-		gga := data.(nmea.GGA)
-		gps.Timestamp = gga.Time.String()
-		coord := models.Coordinate{}
-		coord.Latitude = gga.Latitude
-		coord.Longitude = gga.Longitude
-		gps.Coordinate = coord
-		gps.Hdop = float32(gga.HDOP)
-	}
-	p.Timestamp = time.Now()
-	p.Data = &gps
-	return nil
-}
-
 func (p *LoraParser) ParseLoraData(response string) error {
 	rawData := loraResponse{}
 	if err := json.Unmarshal([]byte(response), &rawData); err != nil {
-		p.RequestId = rawData.RequestId
-		p.Checksum = rawData.Checksum
+		return err
 	}
+	p.RequestId = rawData.RequestId
+	p.Checksum = rawData.Checksum
 	lora := models.LoRaData{}
 	lora.RequestId = rawData.RequestId
 	lora.RSSI = rawData.RSSI
@@ -93,12 +52,24 @@ func (p *LoraParser) ParseLoraData(response string) error {
 }
 
 func (p *PacketParser) ParsePacketData(response string) (models.Packet, error) {
-	rawData := models.Packet{}
-	if err := json.Unmarshal([]byte(response), &rawData); err != nil {
+	var raw struct {
+		models.Packet
+		Timestamp string `json:"timestamp"`
+	}
+	if err := json.Unmarshal([]byte(response), &raw); err != nil {
 		return models.Packet{}, err
 	}
-	rawData.Timestamp = time.Now().UTC().Truncate(time.Millisecond).String()
-	return rawData, nil
+	packet := raw.Packet
+	packet.Timestamp = time.Now().UTC().Truncate(time.Millisecond)
+	if raw.Timestamp != "" {
+		ts, err := time.Parse(time.RFC3339Nano, raw.Timestamp)
+		if err != nil {
+			log.Printf("Invalid packet timestamp %q, using receive time: %v", raw.Timestamp, err)
+		} else {
+			packet.Timestamp = ts.UTC()
+		}
+	}
+	return packet, nil
 }
 
 type Message interface {
@@ -182,7 +153,7 @@ func ParseClientMessage(message string) (Message, error) {
 		par := models.Params{}
 		_, err := fmt.Sscanf(message, "SET_SETTINGS: SF=%f, TX=%f, BW=%f", &par.Sf, &par.Tx, &par.Bandwidth)
 		if err != nil {
-			log.Printf("error parsing params: %v", err)
+			return nil, fmt.Errorf("error parsing SET_SETTINGS: %w", err)
 		}
 		return SetSettingsMessage{Params: par}, nil
 
@@ -190,7 +161,7 @@ func ParseClientMessage(message string) (Message, error) {
 		cleaned := strings.TrimPrefix(message, "START_MEASUREMENT: ")
 		sessionId, err := strconv.Atoi(strings.TrimSpace(cleaned))
 		if err != nil {
-			log.Printf("error parsing get request: %v", err)
+			return nil, fmt.Errorf("error parsing START_MEASUREMENT: %w", err)
 		}
 		return StartMeasurementMessage{SessionId: sessionId}, nil
 
@@ -218,19 +189,9 @@ func ParseClientMessage(message string) (Message, error) {
 		return EspMessage{}, nil
 
 	} else if strings.HasPrefix(message, "MEASUREMENT:") {
-		cleaned := strings.TrimPrefix(message, "MEASUREMENT:")
-		packetParser := PacketParser{}
-		data, err := packetParser.ParsePacketData(cleaned)
-		if err != nil {
-			return IncomingMeasurementMessage{}, fmt.Errorf("error parsing incoming measurement: %w", err)
-		}
-		incoming := IncomingMeasurementMessage{
-			Data:      data,
-			SessionId: 0,
-		}
-		return incoming, nil
+		return ParseIncomingMeasurement(message)
 
-	} else if strings.Contains(message, "ACK: SSET") {
+	} else if strings.HasPrefix(message, "ACK: SSET") {
 		re := regexp.MustCompile(`SF([\d.]+),BW([\d.]+),TX([\d.]+)`)
 		var sf, tx, bw float64
 		var err error
@@ -249,7 +210,7 @@ func ParseClientMessage(message string) (Message, error) {
 		}
 		return SettingsAckMessage{Sf: float32(sf), Bw: float32(bw), Tx: float32(tx)}, nil
 
-	} else if strings.Contains(message, "ACK:") {
+	} else if strings.HasPrefix(message, "ACK") {
 		return AckMessage{}, nil
 
 	} else if strings.Contains(message, "ERROR") {
@@ -271,43 +232,32 @@ func ParseClientMessage(message string) (Message, error) {
 
 func ParseSession(data string) (models.Session, error) {
 	cleaned := strings.TrimPrefix(data, "ADD_SESSION: ")
-	cleaned = strings.Trim(cleaned, "[]")
+	cleaned = strings.Trim(strings.TrimSpace(cleaned), "[]")
 
-	parts := strings.FieldsFunc(cleaned, func(r rune) bool {
-		return r == ',' || r == ' '
-	})
-
-	var cleanParts []string
-	for _, part := range parts {
-		if strings.TrimSpace(part) != "" {
-			cleanParts = append(cleanParts, strings.TrimSpace(part))
-		}
-	}
-	log.Printf("Raw data: %s", data)
-	log.Printf("Cleaned: %s", cleaned)
-	log.Printf("Parts: %v, len: %d", parts, len(parts))
-
-	var session models.Session
-	if len(cleanParts) != 5 {
-		log.Printf("Error parsing session: %v, got len: %v", data, len(cleanParts))
+	parts := strings.Split(cleaned, ",")
+	if len(parts) != 5 {
+		log.Printf("Error parsing session: %v, got len: %v", data, len(parts))
 		return models.Session{}, errors.New("invalid session format")
 	}
+	for i := range parts {
+		parts[i] = strings.TrimSpace(parts[i])
+	}
 
-	sessionID, err := strconv.Atoi(strings.TrimSpace(parts[0]))
+	sessionID, err := strconv.Atoi(parts[0])
 	if err != nil {
-		log.Printf("Error parsing session: %v", data)
-		return models.Session{}, errors.New("invalid session format")
+		return models.Session{}, fmt.Errorf("invalid session id: %w", err)
 	}
-	session.Id = sessionID
-	session.Name = strings.TrimSpace(parts[1])
-	session.StartTime = strings.TrimSpace(parts[2])
-	session.EndTime = strings.TrimSpace(parts[3])
-	count, err := strconv.Atoi(strings.TrimSpace(parts[4]))
+	count, err := strconv.Atoi(parts[4])
 	if err != nil {
-		return session, fmt.Errorf("invalid points: %w", err)
+		return models.Session{}, fmt.Errorf("invalid points: %w", err)
 	}
-	session.Count = count
-	return session, nil
+	return models.Session{
+		Id:        sessionID,
+		Name:      parts[1],
+		StartTime: parts[2],
+		EndTime:   parts[3],
+		Count:     count,
+	}, nil
 }
 
 func ParseRemoveSessionMessage(message string) (int, error) {
@@ -322,8 +272,7 @@ func ParseRemoveSessionMessage(message string) (int, error) {
 }
 
 func ParseTime(timeStr string) (time.Time, error) {
-	layout := "2006-01-02T15:04:05 +0000 UTC m=+1101.042160876"
-	parsedTime, err := time.Parse(layout, timeStr)
+	parsedTime, err := time.Parse(models.TimeLayout, timeStr)
 	if err != nil {
 		return time.Time{}, fmt.Errorf("invalid time format: %w", err)
 	}
@@ -331,15 +280,14 @@ func ParseTime(timeStr string) (time.Time, error) {
 }
 
 func ParseIncomingMeasurement(message string) (IncomingMeasurementMessage, error) {
-	cleaned := strings.TrimPrefix(message, "MEASUREMENT: ")
+	cleaned, ok := strings.CutPrefix(message, "MEASUREMENT:")
+	if !ok {
+		return IncomingMeasurementMessage{}, errors.New("error parsing incoming measurement: no MEASUREMENT: prefix")
+	}
 	packetParser := PacketParser{}
-	_, err := packetParser.ParsePacketData(cleaned)
+	data, err := packetParser.ParsePacketData(cleaned)
 	if err != nil {
 		return IncomingMeasurementMessage{}, fmt.Errorf("error parsing incoming measurement: %w", err)
 	}
-	incoming := IncomingMeasurementMessage{
-		Data:      *packetParser.Data,
-		SessionId: 0,
-	}
-	return incoming, nil
+	return IncomingMeasurementMessage{Data: data}, nil
 }
