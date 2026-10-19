@@ -1,5 +1,9 @@
 package models
 
+import "time"
+
+const TimeLayout = "2006-01-02 15:04:05.999999999 -0700 MST"
+
 type Destination int
 
 const (
@@ -24,13 +28,6 @@ type Coordinate struct {
 	Longitude float64 `json:"longitude,string"`
 }
 
-type GPSData struct {
-	RequestId  int        `json:"request_id"`
-	Coordinate Coordinate `json:"coordinate"`
-	Timestamp  string     `json:"timestamp"`
-	Hdop       float32    `json:"hdop"`
-}
-
 type LoRaData struct {
 	RequestId int     `json:"id"`
 	RSSI      int     `json:"rssi"`
@@ -45,7 +42,7 @@ type Packet struct {
 	SNRL          float64    `json:"snr"`
 	Coordinate    Coordinate `json:"coordinate"`
 	Hdop          float32    `json:"hdop"`
-	Timestamp     string     `json:"timestamp"`
+	Timestamp     time.Time  `json:"timestamp"`
 }
 
 type Params struct {
