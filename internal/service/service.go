@@ -5,7 +5,7 @@ import (
 	"Lora_Esp_Gsm_Gps_project/internal/esp"
 	"Lora_Esp_Gsm_Gps_project/internal/handlers"
 	"Lora_Esp_Gsm_Gps_project/internal/models"
-	"Lora_Esp_Gsm_Gps_project/internal/postgres"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,10 +18,11 @@ import (
 	"time"
 )
 
-type timeredBuffer struct {
-	packets []*models.Packet
-	timer   *time.Timer
-	mx      sync.Mutex
+const measurementTimeout = 15 * time.Second
+
+type measurementBuffer struct {
+	packets  []*models.Packet
+	deadline time.Time
 }
 
 type PendingMessage struct {
@@ -31,47 +32,48 @@ type PendingMessage struct {
 	Timestamp   time.Time
 }
 
+type Repository interface {
+	Save(ctx context.Context, packet *models.Packet, sessionId int) error
+	SaveSession(ctx context.Context, session models.Session) error
+	RemoveSession(ctx context.Context, sessionId int) error
+	GetAllSessions(ctx context.Context) ([]models.Session, error)
+	FindBySession(ctx context.Context, sessionId int) ([]models.Packet, error)
+	FindLastSessionId(ctx context.Context) (int, error)
+	CheckSettings(ctx context.Context, sessionId int) (bool, bool, error)
+	AddSettingsToSession(ctx context.Context, sessionId int, sf, tx, bw float32) error
+}
+
+var pendingOrder = []reflect.Type{
+	reflect.TypeOf(handlers.SetSettingsMessage{}),
+	reflect.TypeOf(handlers.StartMeasurementMessage{}),
+}
+
 type DataService struct {
-	packetChan              chan *models.Packet
-	Repo                    *postgres.Repo
-	interfaceSettingsChange chan *models.Params
-	mu                      sync.RWMutex
-	isProcessing            bool
-	espConnector            *esp.ESPConnector
-	clients                 map[net.Conn]models.Destination
-	PendingMessages         map[reflect.Type]*PendingMessage
-	pendingMessagesLock     sync.RWMutex
+	ctx                 context.Context
+	packetChan          chan *models.Packet
+	Repo                Repository
+	mu                  sync.RWMutex
+	espConnector        *esp.ESPConnector
+	clients             map[net.Conn]struct{}
+	PendingMessages     map[reflect.Type]*PendingMessage
+	pendingMessagesLock sync.Mutex
 }
 
 func NewDataService(connector *esp.ESPConnector) *DataService {
 	service := &DataService{
-		packetChan:              make(chan *models.Packet, 100),
-		Repo:                    nil,
-		interfaceSettingsChange: make(chan *models.Params, 10),
-		espConnector:            connector,
-		clients:                 make(map[net.Conn]models.Destination, 10),
-		PendingMessages:         make(map[reflect.Type]*PendingMessage, 5),
+		ctx:             context.Background(),
+		packetChan:      make(chan *models.Packet, 100),
+		Repo:            nil,
+		espConnector:    connector,
+		clients:         make(map[net.Conn]struct{}),
+		PendingMessages: make(map[reflect.Type]*PendingMessage, 5),
 	}
 	return service
 }
 
-func (s *DataService) EspInitializer(connector esp.Connector) error {
-	s.espConnector = connector.(*esp.ESPConnector)
-	if s.espConnector == nil {
-		return errors.New("esp connector is undefined")
-	}
-	if !s.espConnector.IsConnected() {
-		log.Printf("esp is not connected while initializing service")
-		return errors.New("ESP_NOT_CONNECTED_WHILE_INITIALIZING_SERVICE")
-	}
-	s.clients[s.espConnector.Conn] = models.Lora
-	go s.espConnector.MaintainConnection()
-	return nil
-}
-
-func (s *DataService) StartProcessing() {
+func (s *DataService) StartProcessing(ctx context.Context) {
+	s.ctx = ctx
 	go s.processPackets()
-	go s.processInterfaceSettingsChange()
 	go s.startPendingProcessing()
 }
 
@@ -94,7 +96,7 @@ func (s *DataService) ProcessPacketData(packet models.Packet) error {
 	case s.packetChan <- &packet:
 	default:
 		fmt.Printf("Channel full, saving data and starting channel drain: %+v\n", packet)
-		err := s.Repo.Save(&packet, s.espConnector.CurrentSession)
+		err := s.Repo.Save(s.ctx, &packet, s.espConnector.GetCurrentSession())
 		if err != nil {
 			log.Printf("Unexpected error while saving data: %v", err)
 		}
@@ -111,26 +113,25 @@ func (s *DataService) ProcessPacketData(packet models.Packet) error {
 }
 
 func (s *DataService) DrainDataChannel() error {
-	for i := 0; i < len(s.packetChan); i++ {
+	for {
 		select {
 		case packet := <-s.packetChan:
-			err := s.Repo.Save(packet, s.espConnector.CurrentSession)
+			err := s.Repo.Save(s.ctx, packet, s.espConnector.GetCurrentSession())
 			if err != nil {
 				log.Printf("Error saving packet during drain: %v", err)
 			}
+		default:
+			log.Printf("Data channel drain completed")
+			return nil
 		}
 	}
-	log.Printf("Data channel drain completed")
-
-	return nil
 }
 
-func (s *DataService) ProcessInterfaceSettingChange(conn net.Conn, message string) error {
+func (s *DataService) ProcessInterfaceSettingChange(message string) error {
 	cleanedMessage := strings.TrimPrefix(message, "SET_SETTINGS: ")
 	parts := strings.Split(cleanedMessage, ", ")
-	s.clients[conn] = models.Client
 
-	if s.espConnector.Conn == nil || !s.espConnector.IsConnected() {
+	if s.espConnector.GetConn() == nil || !s.espConnector.IsConnected() {
 		return errors.New("ESP_NOT_CONNECTED")
 	}
 
@@ -161,134 +162,55 @@ func (s *DataService) ProcessInterfaceSettingChange(conn net.Conn, message strin
 	}
 
 	log.Printf("Got params: %+v\n", params)
-	s.interfaceSettingsChange <- &params
-
-	return nil
+	return s.espConnector.SendParamsToDevice(params)
 }
 
 func (s *DataService) processPackets() {
-	s.mu.Lock()
-	s.isProcessing = true
-	s.mu.Unlock()
+	buffers := make(map[int]*measurementBuffer)
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
 
-	defer func() {
-		s.mu.Lock()
-		s.isProcessing = false
-		s.mu.Unlock()
-	}()
-	packetBuffers := make(map[int]*timeredBuffer)
-	defer func() {
-		s.mu.Lock()
-		for _, bwt := range packetBuffers {
-			if bwt != nil && bwt.timer != nil {
-				bwt.timer.Stop()
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		case packet, ok := <-s.packetChan:
+			if !ok {
+				return
 			}
-		}
-		s.mu.Unlock()
-	}()
-
-	//currentId := -1
-
-	for packet := range s.packetChan {
-		err := s.Repo.Save(packet, s.espConnector.CurrentSession)
-		if err != nil {
-			log.Printf("Error saving packet during processing: %v", err)
-		}
-		if packet.PacketNum < 1 || packet.PacketNum > 10 {
-			log.Printf("Invalid packet_num: %d for measurement_id: %d", packet.PacketNum, packet.MeasurementId)
-			continue
-		}
-		buf, exists := packetBuffers[packet.MeasurementId]
-		if !exists {
-			packetBuffers[packet.MeasurementId] = &timeredBuffer{
-				packets: make([]*models.Packet, 10),
-				mx:      sync.Mutex{},
+			err := s.Repo.Save(s.ctx, packet, s.espConnector.GetCurrentSession())
+			if err != nil {
+				log.Printf("Error saving packet during processing: %v", err)
 			}
-			packetBuffers[packet.MeasurementId] = buf
-			buf.timer = time.AfterFunc(15*time.Second, func() {
-				s.mu.Lock()
-				defer s.mu.Unlock()
-				if buf, ok := packetBuffers[packet.MeasurementId]; ok {
-					s.mu.Lock()
-					defer s.mu.Unlock()
-					if buf.packets != nil && !isBufferFull(buf.packets) {
-						avgPacket := calculateAverage(buf.packets)
-						if avgPacket != nil {
-							clientConn, _ := s.FindClientConnection()
-							if clientConn != nil {
-								s.SendPacketToClient(clientConn, *avgPacket)
-							}
-						}
-					}
-					buf.mx.Unlock()
-					if buf.timer != nil {
-						buf.timer.Stop()
-					}
-					delete(packetBuffers, packet.MeasurementId)
+			if packet.PacketNum < 1 || packet.PacketNum > 10 {
+				log.Printf("Invalid packet_num: %d for measurement_id: %d", packet.PacketNum, packet.MeasurementId)
+				continue
+			}
+			buf, exists := buffers[packet.MeasurementId]
+			if !exists {
+				buf = &measurementBuffer{packets: make([]*models.Packet, 10)}
+				buffers[packet.MeasurementId] = buf
+			}
+			buf.packets[packet.PacketNum-1] = packet
+			buf.deadline = time.Now().Add(measurementTimeout)
+			if isBufferFull(buf.packets) {
+				s.sendAverage(buf.packets)
+				delete(buffers, packet.MeasurementId)
+			}
+		case now := <-ticker.C:
+			for id, buf := range buffers {
+				if now.After(buf.deadline) {
+					s.sendAverage(buf.packets)
+					delete(buffers, id)
 				}
-			})
-		} else {
-			buf.mx.Lock()
-			buf.timer.Stop()
-			buf.timer.Reset(15 * time.Second)
-			buf.mx.Unlock()
-		}
-
-		buf.mx.Lock()
-		buf.packets[packet.PacketNum-1] = packet
-		buf.mx.Unlock()
-
-		buf.mx.Lock()
-		full := isBufferFull(buf.packets)
-		buf.mx.Unlock()
-		if full {
-			avgPacket := calculateAverage(buf.packets)
-
-			clientConn, _ := s.FindClientConnection()
-			if avgPacket != nil && clientConn != nil {
-				s.SendPacketToClient(clientConn, *avgPacket)
 			}
-
-			buf.mx.Lock()
-			if buf.timer != nil {
-				buf.timer.Stop()
-			}
-			buf.mx.Unlock()
-
-			delete(packetBuffers, packet.MeasurementId)
 		}
-		//	if currentId == -1 {
-		//		currentId = packet.MeasurementId
-		//		packetBuffers[currentId] = make([]*timeredBuffer, 10)
-		//	} else if currentId != packet.MeasurementId {
-		//		buffer, exists := packetBuffers[currentId]
-		//		if exists && len(buffer) > 0 {
-		//			avgPacket := calculateAverage(buffer)
-		//			if avgPacket != nil {
-		//				clientConn, _ := s.FindClientConnection()
-		//				if clientConn != nil {
-		//					s.SendPacketToClient(clientConn, *avgPacket)
-		//				}
-		//			}
-		//			delete(packetBuffers, currentId)
-		//		}
-		//		currentId = packet.MeasurementId
-		//	}
-		//
-		//	if _, exists := packetBuffers[currentId]; !exists {
-		//		packetBuffers[currentId] = make([]*models.Packet, 10)
-		//	}
-		//	packetBuffers[currentId][packet.PacketNum-1] = packet
-		//	if isBufferFull(packetBuffers[currentId]) {
-		//		avgPacket := calculateAverage(packetBuffers[currentId])
-		//
-		//		clientConn, _ := s.FindClientConnection()
-		//		if avgPacket != nil && clientConn != nil {
-		//			s.SendPacketToClient(clientConn, *avgPacket)
-		//		}
-		//
-		//		delete(packetBuffers, currentId)
-		//	}
+	}
+}
+
+func (s *DataService) sendAverage(packets []*models.Packet) {
+	if avg := calculateAverage(packets); avg != nil {
+		s.SendPacketToClients(*avg)
 	}
 }
 
@@ -304,26 +226,27 @@ func isBufferFull(buffer []*models.Packet) bool {
 func calculateAverage(packets []*models.Packet) *models.Packet {
 	var sumRSSI, sumLat, sumLon, sumSNRL float64
 	var sumHdop float32
+	var last *models.Packet
 	count := 0
 
-	for i := 0; i < len(packets); i++ {
-		p := packets[i]
+	for _, p := range packets {
 		if p == nil {
-			log.Printf("Packet is somehow nil")
 			continue
 		}
 		count++
+		last = p
 		sumRSSI += p.RSSI
 		sumSNRL += p.SNRL
 		sumLat += p.Coordinate.Latitude
 		sumLon += p.Coordinate.Longitude
 		sumHdop += p.Hdop
 	}
+	if count == 0 {
+		return nil
+	}
 
-	basePacket := packets[count-1]
-
-	avgPacket := &models.Packet{
-		MeasurementId: basePacket.MeasurementId,
+	return &models.Packet{
+		MeasurementId: last.MeasurementId,
 		PacketNum:     0,
 		RSSI:          sumRSSI / float64(count),
 		SNRL:          sumSNRL / float64(count),
@@ -332,122 +255,59 @@ func calculateAverage(packets []*models.Packet) *models.Packet {
 			Longitude: sumLon / float64(count),
 		},
 		Hdop:      sumHdop / float32(count),
-		Timestamp: basePacket.Timestamp,
+		Timestamp: last.Timestamp,
 	}
-
-	return avgPacket
 }
 
 func (s *DataService) processPendingMessages() {
 	s.pendingMessagesLock.Lock()
 	defer s.pendingMessagesLock.Unlock()
-	for _, pending := range s.PendingMessages {
-		switch pending.Type {
-		case handlers.SetSettingsMessage{}:
-			if s.espConnector.IsConnected() {
-				conn, exist := s.FindEspConnection()
-				if !exist {
-					log.Printf("NO_ESP_CONNECTION FOUND")
-				}
-				err := s.ProcessInterfaceSettingChange(conn, pending.Message)
-				if err != nil {
-					log.Printf("Error processing pending settings change: %v", err)
-				}
-				log.Printf("Pending settings processed successfully")
-			} else {
-				log.Printf("ESP not connected, skipping pending settings")
-				continue
-			}
-		case handlers.StartMeasurementMessage{}:
-			if s.espConnector.IsConnected() {
-				conn, exist := s.FindEspConnection()
-				if !exist {
-					log.Printf("NO_ESP_CONNECTION FOUND")
-				}
-				msg, err := handlers.ParseClientMessage(pending.Message)
-
-				if err != nil {
-					log.Printf("Error parsing client message: %v", err)
-				}
-				switch m := msg.(type) {
-				case handlers.StartMeasurementMessage:
-					err = s.SendMeasurementCommand(conn, "START_MEASUREMENT", m.SessionId)
-					if err != nil {
-						log.Printf("Error processing pending settings change: %v", err)
-					}
-				}
-				log.Printf("Pending settings processed successfully")
-			} else {
-				continue
-			}
-		default:
-			log.Printf("Unexpected pending message type: %s", pending.Type)
+	for _, typ := range pendingOrder {
+		pending, ok := s.PendingMessages[typ]
+		if !ok {
+			continue
 		}
-	}
-}
-
-func (s *DataService) processInterfaceSettingsChange() {
-	for params := range s.interfaceSettingsChange {
-		if s.espConnector.Conn == nil || !s.espConnector.IsConnected() {
-			log.Printf("ESP_CONNECTION UNAVAILABLE")
-			return
-		}
-
-		err := s.espConnector.SendParamsToDevice(*params)
-		if err != nil {
-			log.Printf("Error sending params to device: %v", err)
-		} else {
-			log.Printf("Params sent to device successfully: %+v", params)
-		}
-	}
-}
-
-func (s *DataService) GetMeasurements(requestID int) ([]models.Packet, error) {
-	if requestID == 0 {
 		var err error
-		requestID, err = s.Repo.FindLastRequestId()
+		switch pending.Type.(type) {
+		case handlers.SetSettingsMessage:
+			err = s.ProcessInterfaceSettingChange(pending.Message)
+		case handlers.StartMeasurementMessage:
+			var msg handlers.Message
+			msg, err = handlers.ParseClientMessage(pending.Message)
+			if start, ok := msg.(handlers.StartMeasurementMessage); err == nil && ok {
+				err = s.espConnector.SendCommand("START_MEASUREMENT", start.SessionId)
+			}
+		}
 		if err != nil {
-			log.Printf("Error getting last request id: %v", err)
+			log.Printf("Error processing pending %s: %v", pending.Type.Type(), err)
+			continue
+		}
+		delete(s.PendingMessages, typ)
+		log.Printf("Pending %s processed successfully", pending.Type.Type())
+	}
+}
+
+func (s *DataService) GetMeasurements(ctx context.Context, sessionId int) ([]models.Packet, error) {
+	if sessionId == 0 {
+		var err error
+		sessionId, err = s.Repo.FindLastSessionId(ctx)
+		if err != nil {
+			log.Printf("Error getting last session id: %v", err)
 			return nil, err
 		}
 	}
 
-	data, err := s.Repo.FindById(requestID)
+	data, err := s.Repo.FindBySession(ctx, sessionId)
 	if err != nil {
-		log.Printf("Error getting measurements for id: %v %d", err, requestID)
+		log.Printf("Error getting measurements for session %d: %v", sessionId, err)
 		return nil, err
 	}
 
 	return data, nil
 }
 
-func (s *DataService) SendMeasurementCommand(conn net.Conn, command string, sessionId int) error {
-	log.Printf("Connected to device %v", conn.RemoteAddr().String())
-	var err error
-	if sessionId == 0 {
-		_, err = conn.Write([]byte(command))
-
-		if err != nil {
-			log.Println(fmt.Errorf("error sending message to esp: %v", err))
-			return err
-		}
-		log.Printf("Sent commands: %v", command)
-		return nil
-	} else {
-		message := fmt.Sprintf("%s SESSION_ID=%d", command, sessionId)
-		_, err = conn.Write([]byte(message))
-
-		if err != nil {
-			log.Println(fmt.Errorf("error sending message to esp: %v", err))
-			return err
-		}
-		log.Printf("Sent commands: %v", message)
-		return nil
-	}
-}
-
-func (s *DataService) SendMeasurementsToClient(conn net.Conn, data string) error {
-	packets, err := s.GetMeasurements(0)
+func (s *DataService) SendMeasurementsToClient(ctx context.Context, conn net.Conn, data string) error {
+	packets, err := s.GetMeasurements(ctx, 0)
 	if err != nil {
 		log.Printf("Error getting measurements: %v", err)
 		return err
@@ -481,8 +341,8 @@ func (s *DataService) SendAllSessions(conn net.Conn, data string) error {
 	return nil
 }
 
-func (s *DataService) GetAllSessions() ([]models.Session, error) {
-	sessions, err := s.Repo.GetAllSessions()
+func (s *DataService) GetAllSessions(ctx context.Context) ([]models.Session, error) {
+	sessions, err := s.Repo.GetAllSessions(ctx)
 	if err != nil {
 		log.Printf("Error getting all sessions: %v", err)
 		return nil, err
@@ -490,8 +350,8 @@ func (s *DataService) GetAllSessions() ([]models.Session, error) {
 	return sessions, nil
 }
 
-func (s *DataService) SaveSession(session models.Session) error {
-	err := s.Repo.SaveSession(session)
+func (s *DataService) SaveSession(ctx context.Context, session models.Session) error {
+	err := s.Repo.SaveSession(ctx, session)
 	if err != nil {
 		log.Printf("Error saving session: %v", err)
 		return err
@@ -499,57 +359,54 @@ func (s *DataService) SaveSession(session models.Session) error {
 	return nil
 }
 
-func (s *DataService) RemoveSession(sessionId int) error {
-	err := s.Repo.RemoveSession(sessionId)
+func (s *DataService) RemoveSession(ctx context.Context, sessionId int) error {
+	err := s.Repo.RemoveSession(ctx, sessionId)
 	if err != nil {
 		log.Printf("Error removing session: %v", err)
 	}
-	return nil
+	return err
 }
 
-func (s *DataService) AddClient(conn net.Conn, destination models.Destination) {
+func (s *DataService) AddClient(conn net.Conn) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	s.clients[conn] = destination
-	log.Printf("Client added: %s (type: %s). Total clients: %d",
-		conn.RemoteAddr().String(), destination.String(), len(s.clients))
-}
-
-func (s *DataService) SendPacketToClient(conn net.Conn, packet models.Packet) {
-	_, exists := s.clients[conn]
-	if !exists {
-		log.Printf("Client not found on connection: %v", conn)
+	if _, exists := s.clients[conn]; exists {
+		return
 	}
+	s.clients[conn] = struct{}{}
+	log.Printf("Client added: %s. Total clients: %d", conn.RemoteAddr(), len(s.clients))
+}
+
+func (s *DataService) RemoveClient(conn net.Conn) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	message := fmt.Sprintf("MEASUREMENT: [%s, %f, %f, %f, %f, %f]", time.Now().String(), packet.RSSI, packet.SNRL, packet.Hdop, packet.Coordinate.Latitude, packet.Coordinate.Longitude)
-	_, err := conn.Write([]byte(message + "\n"))
-	if err != nil {
+	delete(s.clients, conn)
+}
+
+func (s *DataService) Broadcast(msg string) error {
+	s.mu.RLock()
+	conns := make([]net.Conn, 0, len(s.clients))
+	for conn := range s.clients {
+		conns = append(conns, conn)
+	}
+	s.mu.RUnlock()
+
+	var errs []error
+	for _, conn := range conns {
+		if _, err := conn.Write([]byte(msg + "\n")); err != nil {
+			errs = append(errs, fmt.Errorf("write to %s: %w", conn.RemoteAddr(), err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (s *DataService) SendPacketToClients(packet models.Packet) {
+	message := fmt.Sprintf("MEASUREMENT: [%s, %f, %f, %f, %f, %f]", packet.Timestamp.Format(models.TimeLayout), packet.RSSI, packet.SNRL, packet.Hdop, packet.Coordinate.Latitude, packet.Coordinate.Longitude)
+	if err := s.Broadcast(message); err != nil {
 		log.Printf("Error sending message to client: %v", err)
 		return
 	}
-	log.Printf("Message %s sent to client %s", message, conn.RemoteAddr().String())
-}
-
-func (s *DataService) FindClientConnection() (net.Conn, bool) {
-	var clientConn net.Conn
-	for conn, dest := range s.clients {
-		if dest == models.Client {
-			clientConn = conn
-		}
-	}
-	return clientConn, clientConn != nil
-}
-
-func (s *DataService) FindEspConnection() (net.Conn, bool) {
-	var espConn net.Conn
-	for conn, dest := range s.clients {
-		if dest == models.Lora {
-			espConn = conn
-		}
-	}
-	return espConn, espConn != nil
+	log.Printf("Message %s sent to clients", message)
 }
 
 func (s *DataService) AddPendingMessage(message string, destination models.Destination, messageType core.Message) {
@@ -569,33 +426,28 @@ func (s *DataService) AddPendingMessage(message string, destination models.Desti
 		msg.Timestamp.After(existing.Timestamp) {
 		s.PendingMessages[msgType] = msg
 		log.Printf("Added new pending message: %v", msg)
+		return
 	}
 	log.Printf("Havent added pending message: %v", msg)
-}
-
-func (s *DataService) onEspConnected() {
-	log.Printf("ESP connected, processing pending messages")
-	s.processPendingMessages()
 }
 
 func (s *DataService) startPendingProcessing() {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			if s.espConnector.IsConnected() {
-				s.pendingMessagesLock.Lock()
-				s.onEspConnected()
-				s.pendingMessagesLock.Unlock()
-			}
-		}
+	for range ticker.C {
+		s.PendingTick()
 	}
 }
 
-func (s *DataService) GetAllSessionMeasurements(sessionId int) ([]models.Packet, error) {
-	packets, err := s.Repo.FindById(sessionId)
+func (s *DataService) PendingTick() {
+	if !s.espConnector.IsConnected() {
+		return
+	}
+	s.processPendingMessages()
+}
+
+func (s *DataService) GetAllSessionMeasurements(ctx context.Context, sessionId int) ([]models.Packet, error) {
+	packets, err := s.Repo.FindBySession(ctx, sessionId)
 	if err != nil {
 		log.Printf("Error getting all measurements for session: %v", err)
 		return nil, err
@@ -605,31 +457,26 @@ func (s *DataService) GetAllSessionMeasurements(sessionId int) ([]models.Packet,
 }
 
 func (s *DataService) SendSessionPackets(sessionId int, packets []models.Packet) error {
-	clientConn, _ := s.FindClientConnection()
-	if clientConn == nil {
-		log.Printf("Client not connected")
-		return errors.New("client not connected")
-	}
 	for _, packet := range packets {
-		s.SendPacketToClient(clientConn, packet)
+		s.SendPacketToClients(packet)
 	}
 	return nil
 }
 
-func (s *DataService) SetSettingsForSession(params models.Params) error {
-	settingsSet, hasPackets, err := s.Repo.CheckSettings(s.espConnector.CurrentSession)
+func (s *DataService) SetSettingsForSession(ctx context.Context, params models.Params) error {
+	session := s.espConnector.GetCurrentSession()
+	settingsSet, hasPackets, err := s.Repo.CheckSettings(ctx, session)
 	if err != nil {
 		return err
 	}
 	if settingsSet && !hasPackets {
-		log.Printf("Have settings for session: %v, but no packets - changing settings",
-			s.espConnector.CurrentSession)
-		err = s.Repo.AddSettingsToSession(s.espConnector.CurrentSession, params.Sf, params.Tx, params.Bandwidth)
+		log.Printf("Have settings for session: %v, but no packets - changing settings", session)
+		err = s.Repo.AddSettingsToSession(ctx, session, params.Sf, params.Tx, params.Bandwidth)
 		if err != nil {
 			log.Printf("Error adding settings to session: %v", err)
 		}
 
-		log.Printf("Added settings: %+v to session: %+v", params, s.espConnector.CurrentSession)
+		log.Printf("Added settings: %+v to session: %+v", params, session)
 		return nil
 
 	} else if hasPackets {
