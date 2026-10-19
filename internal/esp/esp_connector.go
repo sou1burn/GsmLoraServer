@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 )
 
 type ESPConnector struct {
@@ -21,28 +20,28 @@ type ESPConnector struct {
 	CurrentSession int
 }
 
-type Message interface {
-	Type() string
-}
-
-type MeasurementMessage struct {
-	Data      models.Packet
-	sessionId int
-}
-
-type NoSignalErrorMessage struct {
-	Error string
-}
-
-type UnknownMessage struct{}
-
-func (m MeasurementMessage) Type() string   { return "MEASUREMENT" }
-func (m NoSignalErrorMessage) Type() string { return "NO_SIGNAL" }
-func (m UnknownMessage) Type() string       { return "UNKNOWN" }
-
-type GetMessage struct {
-	What string
-}
+//type Message interface {
+//	Type() string
+//}
+//
+//type MeasurementMessage struct {
+//	Data      models.Packet
+//	sessionId int
+//}
+//
+//type NoSignalErrorMessage struct {
+//	Error string
+//}
+//
+//type UnknownMessage struct{}
+//
+//func (m MeasurementMessage) Type() string   { return "MEASUREMENT" }
+//func (m NoSignalErrorMessage) Type() string { return "NO_SIGNAL" }
+//func (m UnknownMessage) Type() string       { return "UNKNOWN" }
+//
+//type GetMessage struct {
+//	What string
+//}
 
 func (e *ESPConnector) GetIP() string {
 	e.mutex.RLock()
@@ -83,6 +82,12 @@ func (e *ESPConnector) SetConnected(connected bool) {
 	e.mutex.Lock()
 	defer e.mutex.Unlock()
 	e.isConnected = connected
+}
+
+func (e *ESPConnector) GetCurrentSession() int {
+	e.mutex.RLock()
+	defer e.mutex.RUnlock()
+	return e.CurrentSession
 }
 
 func (e *ESPConnector) SetCurrentSession(session int) {
@@ -233,44 +238,4 @@ func (e *ESPConnector) Close() error {
 		return err
 	}
 	return nil
-}
-
-func (e *ESPConnector) MaintainConnection() {
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
-
-	for range ticker.C {
-		if !e.isConnectionAlive() {
-			log.Printf("Connection lost, closing connection and waiting for new onew")
-			e.forceClose()
-		}
-	}
-}
-
-func (e *ESPConnector) isConnectionAlive() bool {
-	e.mutex.RLock()
-	defer e.mutex.RUnlock()
-	if e.Conn == nil {
-		return false
-	}
-
-	e.Conn.SetWriteDeadline(time.Now().Add(50 * time.Millisecond))
-	_, err := e.Conn.Write([]byte{})
-	e.Conn.SetWriteDeadline(time.Time{})
-
-	if err != nil {
-		return false
-	}
-
-	return true
-}
-
-func (e *ESPConnector) forceClose() {
-	e.mutex.Lock()
-	defer e.mutex.Unlock()
-	if e.Conn != nil {
-		e.Conn.Close()
-		e.Conn = nil
-		e.isConnected = false
-	}
 }
