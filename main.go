@@ -5,6 +5,7 @@ import (
 	"Lora_Esp_Gsm_Gps_project/cmd/server"
 	"Lora_Esp_Gsm_Gps_project/configs"
 	"Lora_Esp_Gsm_Gps_project/internal/esp"
+	"context"
 	"io"
 	"log"
 	"os"
@@ -56,7 +57,7 @@ func main() {
 	}(appInstance)
 
 	srv := server.NewServer(appInstance.DataService, espConnector)
-	appInstance.DataService.StartProcessing()
+	appInstance.DataService.StartProcessing(context.Background())
 
 	go func() {
 		if err := srv.StartServer(dbCfg.Port); err != nil {

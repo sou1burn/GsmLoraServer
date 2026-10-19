@@ -6,43 +6,38 @@ import (
 	"Lora_Esp_Gsm_Gps_project/internal/handlers"
 	"Lora_Esp_Gsm_Gps_project/internal/models"
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"log"
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
+
+const statusTimeout = 120 * time.Second
 
 type DeviceStatus struct {
 	LastUpdated time.Time
 	Status      string
 }
 
-type Client struct {
-	conn            net.Conn
-	device          string
-	lastInteraction string
-	isActive        bool
-	mutex           sync.RWMutex
-}
-
 type Server struct {
-	clients              map[string]*Client
-	mutex                sync.RWMutex
+	mutex                sync.Mutex
 	measurementHandler   core.MeasurementHandler
 	connector            esp.Connector
 	waitList             []net.Conn
 	waitListMutex        sync.RWMutex
 	SlaveState           DeviceStatus
 	MasterState          DeviceStatus
-	isMeasurementStarted bool
+	isMeasurementStarted atomic.Bool
+	monitorOnce          sync.Once
 }
 
 func NewServer(h core.MeasurementHandler, connector esp.Connector) *Server {
 	return &Server{
-		clients:            make(map[string]*Client),
 		measurementHandler: h,
 		connector:          connector,
 		SlaveState:         DeviceStatus{},
@@ -51,30 +46,27 @@ func NewServer(h core.MeasurementHandler, connector esp.Connector) *Server {
 }
 
 func (s *Server) StartServer(port string) error {
-
-	log.Printf("Starting server on port %v", port)
-	listener, err := net.Listen("tcp", fmt.Sprintf(":%v", port))
-
+	ln, err := net.Listen("tcp", ":"+port)
 	if err != nil {
-		log.Println(fmt.Errorf("error starting server: %v", err))
+		return fmt.Errorf("listen on port %s: %w", port, err)
 	}
-	defer func(listener net.Listener) {
-		err := listener.Close()
-		if err != nil {
-			log.Printf("Error closing listener: %v", err)
-		}
-	}(listener)
-	defer s.deleteAllClients()
-	log.Printf("Server started listening on port %v", port)
+	return s.Serve(ln)
+}
+
+func (s *Server) Serve(ln net.Listener) error {
+	defer ln.Close()
+	log.Printf("Server started listening on %v", ln.Addr())
 	for {
-		conn, err := listener.Accept()
+		conn, err := ln.Accept()
 		if err != nil {
-			log.Println(fmt.Errorf("error accepting connection: %v", err.Error()))
+			if errors.Is(err, net.ErrClosed) {
+				return nil
+			}
+			log.Printf("error accepting connection: %v", err)
+			continue
 		}
-		log.Printf("Accepted connection from %v", conn.RemoteAddr())
 		go func() {
-			err := s.HandleConnection(conn)
-			if err != nil {
+			if err := s.HandleConnection(conn); err != nil {
 				log.Printf("Error handling connection: %v", err)
 			}
 		}()
@@ -83,157 +75,125 @@ func (s *Server) StartServer(port string) error {
 
 func (s *Server) HandleConnection(conn net.Conn) error {
 	log.Printf("Client connected from %s", conn.RemoteAddr())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	defer func() {
+		s.measurementHandler.RemoveClient(conn)
+		if s.connector.GetConn() == conn {
+			s.connector.SetConnected(false)
+			s.connector.SetConn(nil)
+			log.Printf("ESP disconnected: %s", conn.RemoteAddr())
+		}
+		_ = conn.Close()
+	}()
 	scanner := bufio.NewScanner(conn)
 
-	//go s.startConnectionChecker()
 	for scanner.Scan() {
 		message := scanner.Text()
 		log.Printf("Got message: %s", message)
-		parsedMsg, err := handlers.ParseClientMessage(s.measurementHandler, message)
+		parsedMsg, err := handlers.ParseClientMessage(message)
 
 		if err != nil {
 			log.Printf("Error parsing message: %v", err)
+			s.replyError(conn, err)
 			continue
 		}
 
 		log.Printf("Parsed message type: %T", parsedMsg)
 		switch msg := parsedMsg.(type) {
 		case handlers.SetSettingsMessage:
-			s.isMeasurementStarted = false
-			id := "settings-change"
-			log.Printf("Setting change %s", id)
+			s.isMeasurementStarted.Store(false)
+			s.measurementHandler.AddClient(conn)
 			if s.connector.IsConnected() {
-				s.registerClient(id, conn)
 				s.HandleSetSettings(conn, message)
-				s.updateClientInteraction(id)
 			} else {
-				log.Printf("Error branch for SSM")
 				s.addWaitingClient(conn)
-				log.Printf("Client %s waiting for esp connection, ", id)
+				log.Printf("Client %s waiting for esp connection", conn.RemoteAddr())
 				s.measurementHandler.AddPendingMessage(message, models.Lora, handlers.SetSettingsMessage{})
-				go func() {
-					err := s.waitForEspConnection(conn)
-					if err != nil {
-						log.Printf("Error waiting for esp connection: %v", err)
-					}
-				}()
+				go s.waitForEspConnectionLogged(conn)
 			}
 
 		case handlers.StartMeasurementMessage:
-			s.isMeasurementStarted = true
-			id := "start-meas"
-			log.Printf("Starting handling measurement for %s", id)
+			s.isMeasurementStarted.Store(true)
+			s.measurementHandler.AddClient(conn)
 			if s.connector.IsConnected() {
-				s.handleStartMeasurement(conn, msg.SessionId)
-				s.registerClient(id, conn)
-				s.updateClientInteraction(id)
+				s.handleStartMeasurement(ctx, conn, msg.SessionId)
 			} else {
-				log.Printf("Error branch in SMM")
 				s.addWaitingClient(conn)
-				log.Printf("Client %s waiting for esp connection, ", id)
+				log.Printf("Client %s waiting for esp connection", conn.RemoteAddr())
 				s.measurementHandler.AddPendingMessage(message, models.Lora, handlers.StartMeasurementMessage{})
-				go func() {
-					err = s.waitForEspConnection(conn)
-					if err != nil {
-						log.Printf("Error waiting for esp connection: %v", err)
-					}
-				}()
+				go s.waitForEspConnectionLogged(conn)
 			}
 
 		case handlers.StopMeasurementMessage: // command unused
 			return nil
 		case handlers.GetMeasurementSessionsMessage: //esp not used here
-			s.HandleGetMeasurementSessions(conn)
-			id := "get-sessions"
-			s.registerClient(id, conn)
-			s.updateClientInteraction(id)
-			if s.MasterState.Status != "" {
-				err = s.SendMasterStatus(s.MasterState.Status)
-				if err != nil {
-					log.Printf("Error sending master status: %v", err)
-				}
+			s.measurementHandler.AddClient(conn)
+			s.HandleGetMeasurementSessions(ctx, conn)
+			s.mutex.Lock()
+			master, slave := s.MasterState.Status, s.SlaveState.Status
+			s.mutex.Unlock()
+			if master != "" {
+				s.write(conn, "MASTER_STATUS "+master)
 			}
-			if s.SlaveState.Status != "" {
-				err = s.SendSlaveStatus(s.SlaveState.Status)
-				if err != nil {
-					log.Printf("Error sending slave status: %v", err)
-				}
+			if slave != "" {
+				s.write(conn, "SLAVE_STATUS "+slave)
 			}
 
 		case handlers.AddSessionMessage: //esp not used here
-			s.HandleAddSession(conn, msg.Session)
-			id := "add-session"
-			s.registerClient(id, conn)
-			s.updateClientInteraction(id)
+			s.measurementHandler.AddClient(conn)
+			s.HandleAddSession(ctx, conn, msg.Session)
 
 		case handlers.RemoveSessionMessage: // esp not used here
-			s.HandleRemoveSession(conn, msg.SessionId)
-			id := "remove-session"
-			s.registerClient(id, conn)
-			s.updateClientInteraction(id)
+			s.measurementHandler.AddClient(conn)
+			s.HandleRemoveSession(ctx, conn, msg.SessionId)
 
 		case handlers.EspMessage:
 			log.Printf("Esp message received: %v", msg)
 			s.HandleEspConnection(conn)
-			log.Printf("New status for master: %v", "CONNECTED")
-			if s.clients["get-sessions"] != nil {
-				err = s.SendMasterStatus("ISALIVE")
-			} else {
-				s.MasterState.Status = "ISALIVE"
+			if err := s.SendMasterStatus("ISALIVE"); err != nil {
+				log.Printf("Error sending master status: %v", err)
 			}
-			id := "identify_esp"
-			s.registerClient(id, conn)
-			s.updateClientInteraction(id)
-			once := sync.Once{}
-			once.Do(func() { s.StartStatusMonitor() })
+			s.StartStatusMonitor()
 		case handlers.IncomingMeasurementMessage:
 			log.Printf("Received incoming measurement: %v", msg)
-			if !s.isMeasurementStarted {
+			if !s.isMeasurementStarted.Load() {
 				log.Printf("Measurement has not started, skip packet")
 				break
 			}
-			err = s.measurementHandler.ProcessPacketData(msg.Data)
-			id := "meas_esp"
-			s.registerClient(id, conn)
-			s.updateClientInteraction(id)
+			if err := s.measurementHandler.ProcessPacketData(msg.Data); err != nil {
+				log.Printf("Error processing packet: %v", err)
+			}
+		case handlers.SettingsAckMessage:
+			log.Printf("Received settings ack: %v", msg)
+			if err := s.SendStatus(fmt.Sprintf(msg.Type()+": SF: %f, BW: %f, TX: %f", msg.Sf, msg.Bw, msg.Tx)); err != nil {
+				log.Printf("Error sending settings ack: %v", err)
+			}
+			s.SetSettingsForSession(ctx, models.Params{Sf: msg.Sf, Tx: msg.Tx, Bandwidth: msg.Bw})
 		case handlers.AckMessage:
 			log.Printf("Received ack message: %v", msg)
-			log.Printf("New status for master: %v", "CONNECTED")
-			if s.clients["get-sessions"] != nil {
-				err = s.SendMasterStatus("ISALIVE")
-			} else {
-				s.MasterState.Status = "ISALIVE"
+			if err := s.SendMasterStatus("ISALIVE"); err != nil {
+				log.Printf("Error sending master status: %v", err)
 			}
 		case handlers.ErrMessage:
 			log.Printf("Received err message from master: %v", msg)
 		case handlers.UnknownMessage:
 			log.Printf("Unknown message type: %v", message)
+			s.replyError(conn, fmt.Errorf("unknown command: %s", message))
 		case handlers.MasterStatusMessage:
 			log.Printf("New status for master: %v", msg.Status)
-			if s.clients["get-sessions"] != nil {
-				err = s.SendMasterStatus(msg.Status)
-			} else {
-				s.MasterState.Status = msg.Status
-			}
-			if err != nil {
+			if err := s.SendMasterStatus(msg.Status); err != nil {
 				log.Printf("Error sending master status: %v", err)
 			}
 		case handlers.SlaveStatusMessage:
 			log.Printf("New status for slave: %v", msg.Status)
-			if s.clients["get-sessions"] != nil {
-				err = s.SendSlaveStatus(msg.Status)
-				if err != nil {
-					log.Printf("Error sending slave status: %v", err)
-				}
-			} else {
-				s.SlaveState.Status = msg.Status
+			if err := s.SendSlaveStatus(msg.Status); err != nil {
+				log.Printf("Error sending slave status: %v", err)
 			}
 		default:
 			log.Printf("Unhandled message type: %T", msg)
 		}
-		log.Printf("Received message: %v", message)
 	}
-	//s.checkIsConnectionsAlive()
 	if err := scanner.Err(); err != nil {
 		log.Println("Error reading:", err.Error())
 		return err
@@ -241,31 +201,22 @@ func (s *Server) HandleConnection(conn net.Conn) error {
 	return nil
 }
 
-func (s *Server) registerClient(clientId string, conn net.Conn) {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
-
-	s.clients[clientId] = &Client{
-		conn:            conn,
-		lastInteraction: time.Now().String(),
-		isActive:        true,
+func (s *Server) write(conn net.Conn, msg string) {
+	if _, err := conn.Write([]byte(msg + "\n")); err != nil {
+		log.Printf("Error writing to %s: %v", conn.RemoteAddr(), err)
 	}
-
-	log.Printf("Registered client: %s", clientId)
 }
 
-func (s *Server) unregisterClient(deviceID string) {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
+func (s *Server) replyError(conn net.Conn, err error) {
+	if conn == s.connector.GetConn() {
+		return
+	}
+	s.write(conn, "ERROR: "+err.Error())
+}
 
-	if client, exists := s.clients[deviceID]; exists {
-		err := client.conn.Close()
-		if err != nil {
-			log.Printf("Error closing connection for client %s: %v", deviceID, err)
-			return
-		}
-		delete(s.clients, deviceID)
-		log.Printf("Deregistered client: %s", deviceID)
+func (s *Server) waitForEspConnectionLogged(conn net.Conn) {
+	if err := s.waitForEspConnection(conn); err != nil {
+		log.Printf("Error waiting for esp connection: %v", err)
 	}
 }
 
@@ -309,78 +260,26 @@ func (s *Server) removeWaitingClient(conn net.Conn) {
 	}
 }
 
-func (s *Server) removeAllWaitingClients() {
-	s.waitListMutex.Lock()
-	defer s.waitListMutex.Unlock()
-	for _, connection := range s.waitList {
-		s.removeWaitingClient(connection)
-	}
-}
-
 func (s *Server) notifyWaitingClients() {
 	s.waitListMutex.Lock()
 	defer s.waitListMutex.Unlock()
-	//
-	//for _, conn := range s.waitList {
-	//	conn.Write([]byte("ESP_CONNECTED_PROCEEDING\n"))
-	//}
 	s.waitList = nil
 }
 
-//func (s *Server) checkIsConnectionsAlive() {
-//	s.mutex.Lock()
-//	defer s.mutex.Unlock()
-//	for deviceID, client := range s.clients {
-//		ok := client.isConnectionAlive()
-//		if !ok {
-//			log.Printf("Client %s inactive for over 5 minutes, disconnecting", deviceID)
-//			err := client.conn.Close()
-//			if err != nil {
-//				log.Printf("Error closing connection for client %s: %v", deviceID, err)
-//				continue
-//			}
-//			delete(s.clients, deviceID)
-//			log.Printf("Unregistered inactive client: %s", deviceID)
-//		}
-//	}
-//}
-
-func (s *Server) updateClientInteraction(clientID string) {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
-
-	if client, exists := s.clients[clientID]; exists {
-		client.lastInteraction = time.Now().String()
-		client.isActive = true
-	}
-}
-
-func (s *Server) deleteAllClients() {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
-	for _, client := range s.clients {
-		s.unregisterClient(client.device)
-	}
-}
-
 func (s *Server) HandleSetSettings(conn net.Conn, message string) {
-	go func() {
-		err := s.measurementHandler.ProcessInterfaceSettingChange(conn, message)
-		if err != nil {
-			log.Printf("Error processing interface request: %v", err)
-		}
-	}()
+	if err := s.measurementHandler.ProcessInterfaceSettingChange(message); err != nil {
+		log.Printf("Error sending interface request: %v", err)
+		s.replyError(conn, err)
+	}
 }
 
-func (s *Server) handleStartMeasurement(conn net.Conn, sessionId int) {
+func (s *Server) handleStartMeasurement(ctx context.Context, conn net.Conn, sessionId int) {
+	if err := s.connector.SendCommand("START_MEASUREMENT", sessionId); err != nil {
+		log.Printf("Error processing interface request: %v", err)
+		s.replyError(conn, err)
+	}
 	go func() {
-		err := s.connector.SendCommand("START_MEASUREMENT", sessionId)
-		if err != nil {
-			log.Printf("Error processing interface request: %v", err)
-		}
-	}()
-	go func() {
-		packets, err := s.measurementHandler.GetAllSessionMeasurements(sessionId)
+		packets, err := s.measurementHandler.GetAllSessionMeasurements(ctx, sessionId)
 		if err != nil {
 			log.Printf("Error getting session measurements: %v", err)
 		}
@@ -393,24 +292,25 @@ func (s *Server) handleStartMeasurement(conn net.Conn, sessionId int) {
 	}()
 }
 
-func (s *Server) HandleGetMeasurementSessions(conn net.Conn) {
+func (s *Server) HandleGetMeasurementSessions(ctx context.Context, conn net.Conn) {
 	go func() {
-		sessions, err := s.measurementHandler.GetAllSessions()
+		sessions, err := s.measurementHandler.GetAllSessions(ctx)
 		if err != nil {
 			log.Printf("Error getting sessions: %v", err)
+			s.replyError(conn, err)
 			return
 		}
 		var parts []string
 		for _, session := range sessions {
-			str := fmt.Sprintf("[%d, %s, %s, %s, %d]", session.Id, session.Name, session.StartTime, session.EndTime, session.Count)
+			var str string
+			if session.Bandwidth == 0 || session.Sf == 0 {
+				str = fmt.Sprintf("[%d, %s, %s, %s, %d, -]", session.Id, session.Name, session.StartTime, session.EndTime, session.Count)
+			} else {
+				str = fmt.Sprintf("[%d, %s, %s, %s, %d, %f, %f, %f]", session.Id, session.Name, session.StartTime, session.EndTime, session.Count, session.Sf, session.Bandwidth, session.Tx)
+			}
 			parts = append(parts, str)
 		}
-		sessionsStr := strings.Join(parts, ", ")
-		if err != nil {
-			log.Printf("Error joining sessions: %v", err)
-			return
-		}
-		err = s.measurementHandler.SendAllSessions(conn, sessionsStr)
+		err = s.measurementHandler.SendAllSessions(conn, strings.Join(parts, ", "))
 		if err != nil {
 			log.Printf("Error sending sessions to client: %v", err)
 			return
@@ -418,164 +318,104 @@ func (s *Server) HandleGetMeasurementSessions(conn net.Conn) {
 	}()
 }
 
-func (s *Server) HandleAddSession(conn net.Conn, session models.Session) {
-	err := s.measurementHandler.SaveSession(session)
+func (s *Server) HandleAddSession(ctx context.Context, conn net.Conn, session models.Session) {
+	err := s.measurementHandler.SaveSession(ctx, session)
 	if err != nil {
 		log.Printf("Error saving session: %v", err)
+		s.replyError(conn, err)
 		return
 	}
 	log.Printf("Session saved: %v", session)
 }
 
-func (s *Server) HandleRemoveSession(conn net.Conn, sessionId int) {
-	err := s.measurementHandler.RemoveSession(sessionId)
+func (s *Server) HandleRemoveSession(ctx context.Context, conn net.Conn, sessionId int) {
+	err := s.measurementHandler.RemoveSession(ctx, sessionId)
 	if err != nil {
 		log.Printf("Error removing session: %v", err)
+		s.replyError(conn, err)
 		return
 	}
 	log.Printf("Session removed: %v", sessionId)
 }
 
 func (s *Server) HandleEspConnection(conn net.Conn) {
-	s.connector.SetConn(nil)
-
-	s.connector.SetConnected(true)
 	s.connector.SetIP(conn.RemoteAddr().String())
 	s.connector.SetConn(conn)
-
-	err := s.measurementHandler.EspInitializer(s.connector)
-	if err != nil {
-		log.Printf("Error initializing Esp: %v", err)
-		return
-	}
+	s.connector.SetConnected(true)
 	log.Printf("Connection from esp: %v", conn.RemoteAddr().String())
 	log.Printf("ESP_OK")
 }
 
 func (s *Server) SendMasterStatus(status string) error {
-	if s.clients == nil {
-		log.Printf("No clients connected, skip sending master status")
-		return nil
-	}
-
-	if status == "ISALIVE" {
-		s.MasterState.Status = "CONNECTED"
-	} else {
-		s.MasterState.Status = "DISCONNECTED"
-	}
-	s.MasterState.LastUpdated = time.Now()
-	log.Printf("Sending master status: %v, %s, conn: %s", s.MasterState.Status, s.MasterState.LastUpdated, s.clients["get-sessions"].conn.RemoteAddr().String())
-
-	return s.SendStatus("MASTER_STATUS " + s.MasterState.Status)
+	return s.setStatus(&s.MasterState, "MASTER_STATUS", status)
 }
 
 func (s *Server) SendSlaveStatus(status string) error {
-	if s.clients == nil {
-		log.Printf("No clients connected, skip sending slave status")
-		return nil
-	}
-	if status == "ISALIVE" {
-		s.SlaveState.Status = "CONNECTED"
-	} else {
-		s.SlaveState.Status = "DISCONNECTED"
-	}
-	s.SlaveState.LastUpdated = time.Now()
-	log.Printf("Sending slave status: %v, %s, conn: %s", s.SlaveState.Status, s.SlaveState.LastUpdated, s.clients["get-sessions"].conn.RemoteAddr().String())
+	return s.setStatus(&s.SlaveState, "SLAVE_STATUS", status)
+}
 
-	return s.SendStatus("SLAVE_STATUS " + s.SlaveState.Status)
+func (s *Server) setStatus(state *DeviceStatus, prefix, status string) error {
+	s.mutex.Lock()
+	state.Status = "DISCONNECTED"
+	if status == "ISALIVE" {
+		state.Status = "CONNECTED"
+	}
+	state.LastUpdated = time.Now()
+	msg := prefix + " " + state.Status
+	s.mutex.Unlock()
+
+	log.Printf("Sending status: %s", msg)
+	return s.SendStatus(msg)
 }
 
 func (s *Server) SendStatus(status string) error {
-
-	if client, exists := s.clients["get-sessions"]; exists {
-		client.mutex.RLock()
-		defer client.mutex.RUnlock()
-		if client.isActive {
-			n, err := client.conn.Write([]byte(status + "\n"))
-			log.Printf("Sending status to client: %v, %s", client, status)
-			if err != nil {
-				log.Printf("Error writing to connection (bytes written: %d): %v", n, err)
-				log.Printf("Connection error type: %T", err)
-				var netErr net.Error
-				if errors.As(err, &netErr) && netErr.Timeout() {
-					log.Printf("Write timeout occurred")
-				}
-				return err
-			}
-			log.Printf("Successfully sent %d bytes to client", n)
-		}
-		return nil
-	}
-
-	return errors.New("no interface connected")
-}
-
-func (c *Client) setInactive() {
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
-	c.isActive = false
-}
-
-func (c *Client) isConnectionAlive() bool {
-	c.mutex.RLock()
-	defer c.mutex.RUnlock()
-	inter, err := handlers.ParseTime(c.lastInteraction)
-	if err != nil {
-		log.Printf("Error parsing last interaction time: %v", err)
-		return false
-	}
-	return c.isActive && time.Since(inter) < 5*time.Minute
+	return s.measurementHandler.Broadcast(status)
 }
 
 func (s *Server) StartStatusMonitor() {
-	go func() {
-		ticker := time.NewTicker(15 * time.Second)
-		defer ticker.Stop()
+	s.monitorOnce.Do(func() {
+		go func() {
+			ticker := time.NewTicker(15 * time.Second)
+			defer ticker.Stop()
 
-		for range ticker.C {
-			s.checkAndUpdateStatus()
-		}
-	}()
+			for range ticker.C {
+				s.checkAndUpdateStatus()
+			}
+		}()
+	})
+}
+
+func isStale(state DeviceStatus) bool {
+	return !state.LastUpdated.IsZero() && time.Since(state.LastUpdated) > statusTimeout && state.Status != "DISCONNECTED"
 }
 
 func (s *Server) checkAndUpdateStatus() {
 	s.mutex.Lock()
-	defer s.mutex.Unlock()
+	masterStale, slaveStale := isStale(s.MasterState), isStale(s.SlaveState)
+	s.mutex.Unlock()
 
-	now := time.Now()
-
-	if !s.MasterState.LastUpdated.IsZero() && now.Sub(s.MasterState.LastUpdated) > 120*time.Second && s.MasterState.Status != "DISCONNECTED" {
+	if masterStale {
 		log.Printf("Master state did not update for over 2 mins, change to DISCONNECTED")
-		log.Printf("Master state before: %s, after: %s", s.MasterState, "DISCONNECTED")
-
-		err := s.SendMasterStatus("DISCONNECTED")
-		if err != nil {
+		if err := s.SendMasterStatus("DISCONNECTED"); err != nil {
 			log.Printf("Error sending master status: %v", err)
 		}
-	} else if now.Sub(s.MasterState.LastUpdated) > 120*time.Second && s.MasterState.Status == "DISCONNECTED" {
-		log.Printf("Timeout expired, skip changing master status, stay DISCONNECTED")
 	}
-
-	if !s.SlaveState.LastUpdated.IsZero() && now.Sub(s.SlaveState.LastUpdated) > 120*time.Second && s.SlaveState.Status != "DISCONNECTED" {
+	if slaveStale {
 		log.Printf("Slave state did not update for over 2 mins, change to DISCONNECTED")
-		log.Printf("Slave state before: %s, after: %s", s.SlaveState.Status, "DISCONNECTED")
-		err := s.SendSlaveStatus("DISCONNECTED")
-		if err != nil {
-			log.Printf("Error sending master status: %v", err)
+		if err := s.SendSlaveStatus("DISCONNECTED"); err != nil {
+			log.Printf("Error sending slave status: %v", err)
 		}
-	} else if now.Sub(s.SlaveState.LastUpdated) > 120*time.Second && s.SlaveState.Status == "DISCONNECTED" {
-		log.Printf("Timeout expired, skip changing slave status, stay DISCONNECTED")
 	}
 }
 
-//func (s *Server) startConnectionChecker() {
-//	ticker := time.NewTicker(1 * time.Minute)
-//	defer ticker.Stop()
-//
-//	for {
-//		select {
-//		case <-ticker.C:
-//			s.checkIsConnectionsAlive()
-//		}
-//	}
-//}
+func (s *Server) SetSettingsForSession(ctx context.Context, params models.Params) {
+	go func() {
+		err := s.measurementHandler.SetSettingsForSession(ctx, params)
+		if err != nil {
+			log.Printf("Error setting settings for session: %v", err)
+			if err := s.SendStatus("ALREADY_SET"); err != nil {
+				log.Printf("Error sending ALREADY_SET: %v", err)
+			}
+		}
+	}()
+}

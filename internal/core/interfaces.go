@@ -1,7 +1,6 @@
 package core
 
 import (
-	"Lora_Esp_Gsm_Gps_project/internal/esp"
 	"Lora_Esp_Gsm_Gps_project/internal/models"
 	"context"
 	"database/sql"
@@ -29,16 +28,18 @@ type App interface {
 
 type MeasurementHandler interface {
 	ProcessPacketData(packet models.Packet) error
-	ProcessInterfaceSettingChange(conn net.Conn, msg string) error
-	GetMeasurements(requestID int) ([]models.Packet, error)
-	SendMeasurementCommand(conn net.Conn, command string, sessionId int) error
-	SendMeasurementsToClient(conn net.Conn, command string) error
-	GetAllSessions() ([]models.Session, error)
+	ProcessInterfaceSettingChange(msg string) error
+	GetMeasurements(ctx context.Context, sessionId int) ([]models.Packet, error)
+	SendMeasurementsToClient(ctx context.Context, conn net.Conn, command string) error
+	GetAllSessions(ctx context.Context) ([]models.Session, error)
 	SendAllSessions(conn net.Conn, data string) error
-	SaveSession(session models.Session) error
-	RemoveSession(sessionId int) error
-	EspInitializer(espConnector esp.Connector) error
+	SaveSession(ctx context.Context, session models.Session) error
+	RemoveSession(ctx context.Context, sessionId int) error
 	AddPendingMessage(message string, dest models.Destination, typ Message)
-	GetAllSessionMeasurements(sessionId int) ([]models.Packet, error)
+	GetAllSessionMeasurements(ctx context.Context, sessionId int) ([]models.Packet, error)
 	SendSessionPackets(sessionId int, packets []models.Packet) error
+	SetSettingsForSession(ctx context.Context, params models.Params) error
+	AddClient(conn net.Conn)
+	RemoveClient(conn net.Conn)
+	Broadcast(msg string) error
 }

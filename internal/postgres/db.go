@@ -2,6 +2,8 @@ package postgres
 
 import (
 	"Lora_Esp_Gsm_Gps_project/configs"
+	migrations "Lora_Esp_Gsm_Gps_project/db"
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -9,6 +11,7 @@ import (
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/pressly/goose/v3"
 
 	"Lora_Esp_Gsm_Gps_project/internal/models"
 )
@@ -61,112 +64,22 @@ func NewPostgresDB(config configs.Config) (*sql.DB, error) {
 	return db, nil
 }
 
-func (r *Repo) InitTables() (error, error) {
-	return r.CreateSessionsTable(), r.CreatePacketsTable()
-}
-
-func (r *Repo) CreatePacketsTable() error {
-	_, err := r.db.Exec(`
-		CREATE TABLE IF NOT EXISTS packets (
-			id SERIAL PRIMARY KEY,
-			measurement_id INTEGER NOT NULL,
-			packet_num INTEGER NOT NULL,
-			rssi FLOAT NOT NULL,
-			snrl DOUBLE PRECISION NOT NULL,
-			latitude FLOAT NOT NULL,
-			longitude FLOAT NOT NULL,
-			hdop DOUBLE PRECISION NOT NULL,
-			timestamp VARCHAR(55) NOT NULL,
-		    session_id BIGINT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE
-		)
-	`)
-
-	if err != nil {
+func Migrate(ctx context.Context, db *sql.DB) error {
+	goose.SetBaseFS(migrations.Migrations)
+	if err := goose.SetDialect("postgres"); err != nil {
 		return err
 	}
-	_, err = r.db.Exec(`
-        CREATE INDEX IF NOT EXISTS idx_packets_session_measurement 
-        ON packets (session_id, measurement_id)
-    `)
-
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func (r *Repo) CreateSessionsTable() error {
-	_, err := r.db.Exec(`
-		CREATE TABLE IF NOT EXISTS sessions (
-			id BIGINT PRIMARY KEY,
-			name VARCHAR(100) NOT NULL,
-			start_time TIMESTAMP NOT NULL,
-			end_time TIMESTAMP,
-		    count INTEGER NOT NULL
-		)`)
-	if err != nil {
-		return fmt.Errorf("failed to create sessions table: %w", err)
+	if err := goose.UpContext(ctx, db, "migrations"); err != nil {
+		return fmt.Errorf("failed to apply migrations: %w", err)
 	}
 	return nil
 }
 
-func (r *Repo) InitializeSessionCounts() error {
-	_, err := r.db.Exec(`
-        UPDATE sessions s
-        SET count = COALESCE(
-            (SELECT COUNT(DISTINCT measurement_id) FROM packets p WHERE p.session_id = s.id),
-            0
-        );
-    `)
-	return err
-}
-
-func (r *Repo) CreateCountingTrigger() error {
-	_, err := r.db.Exec(`
-        CREATE OR REPLACE FUNCTION update_session_count()
-        RETURNS TRIGGER AS $$
-        BEGIN
-            UPDATE sessions 
-            SET count = (
-                SELECT COUNT(DISTINCT measurement_id) 
-                FROM packets 
-                WHERE session_id = NEW.session_id
-            )
-            WHERE id = NEW.session_id;
-            RETURN NEW;
-        END;
-        $$ LANGUAGE plpgsql;
-    `)
-	if err != nil {
-		return fmt.Errorf("failed to create trigger function: %w", err)
-	}
-	_, err = r.db.Exec(`
-        DROP TRIGGER IF EXISTS increment_session_count ON packets;
-        CREATE TRIGGER increment_session_count
-        AFTER INSERT OR DELETE ON packets
-        FOR EACH ROW
-        EXECUTE FUNCTION update_session_count();
-    `)
-
-	if err != nil {
-		return fmt.Errorf("failed to create trigger: %w", err)
-	}
-	return nil
-}
-
-func (r *Repo) Save(packet *models.Packet, sessionId int) error {
-	var id int
-	var err error
+func (r *Repo) Save(ctx context.Context, packet *models.Packet, sessionId int) error {
 	if sessionId == 0 {
-		id, err = r.FindLastSessionId()
-		if err != nil {
-			return err
-		}
-	} else {
-		id = sessionId
+		return errors.New("failed to save packet: session is not set (START_MEASUREMENT not received)")
 	}
-	_, err = r.db.Exec("INSERT INTO PACKETS "+
+	_, err := r.db.ExecContext(ctx, "INSERT INTO PACKETS "+
 		"(id, measurement_id, packet_num, rssi, snrl, latitude, longitude, hdop, timestamp, session_id) values (DEFAULT,$1, $2, $3, $4, $5, $6, $7, $8, $9)",
 		packet.MeasurementId,
 		packet.PacketNum,
@@ -175,8 +88,8 @@ func (r *Repo) Save(packet *models.Packet, sessionId int) error {
 		packet.Coordinate.Latitude,
 		packet.Coordinate.Longitude,
 		packet.Hdop,
-		packet.Timestamp,
-		id,
+		packet.Timestamp.UTC().Format(models.TimeLayout),
+		sessionId,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to save packet: %w", err)
@@ -184,53 +97,59 @@ func (r *Repo) Save(packet *models.Packet, sessionId int) error {
 	return err
 }
 
-func (r *Repo) SaveSession(session models.Session) error {
-	_, err := r.db.Exec("INSERT INTO SESSIONS "+
-		"(id, name, start_time, end_time, count) values ($1, $2, $3, $4, $5)",
+func (r *Repo) SaveSession(ctx context.Context, session models.Session) error {
+	_, err := r.db.ExecContext(ctx, "INSERT INTO SESSIONS "+
+		"(id, name, start_time, end_time, count, sf, bw, tx) values ($1, $2, $3, $4, $5, $6, $7, $8)",
 		session.Id,
 		session.Name,
 		session.StartTime,
 		session.EndTime,
 		session.Count,
+		session.Sf,
+		session.Bandwidth,
+		session.Tx,
 	)
+
 	if err != nil {
 		return fmt.Errorf("failed to save session: %w", err)
 	}
 	return err
 }
 
-func (r *Repo) RemoveSession(sessionId int) error {
-	_, err := r.db.Exec("DELETE FROM sessions WHERE id = $1", sessionId)
+func (r *Repo) RemoveSession(ctx context.Context, sessionId int) error {
+	_, err := r.db.ExecContext(ctx, "DELETE FROM sessions WHERE id = $1", sessionId)
 	if err != nil {
 		return fmt.Errorf("failed to delete session: %w", err)
 	}
 	return nil
 }
 
-func (r *Repo) GetAllSessions() ([]models.Session, error) {
-	rows, err := r.db.Query("SELECT id, name, start_time, end_time, count " +
+func (r *Repo) GetAllSessions(ctx context.Context) ([]models.Session, error) {
+	rows, err := r.db.QueryContext(ctx, "SELECT id, name, start_time, end_time, count, sf, bw, tx "+
 		"FROM sessions")
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return []models.Session{}, ErrNotFound
-		}
 		return nil, fmt.Errorf("failed to query sessions: %w", err)
 	}
 	defer rows.Close()
 
-	var sessions []models.Session
+	sessions := []models.Session{}
 	for rows.Next() {
 		var session models.Session
+		var endTime sql.NullString
 		err := rows.Scan(
 			&session.Id,
 			&session.Name,
 			&session.StartTime,
-			&session.EndTime,
+			&endTime,
 			&session.Count,
+			&session.Sf,
+			&session.Bandwidth,
+			&session.Tx,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan session: %w", err)
 		}
+		session.EndTime = endTime.String
 		sessions = append(sessions, session)
 	}
 
@@ -238,16 +157,13 @@ func (r *Repo) GetAllSessions() ([]models.Session, error) {
 		return nil, fmt.Errorf("error iterating over sessions: %w", err)
 	}
 
-	if len(sessions) == 0 {
-		return nil, ErrNotFound
-	}
-
 	return sessions, nil
 }
 
-func (r *Repo) FindById(sessionId int) ([]models.Packet, error) {
-	rows, err := r.db.Query(`
+func (r *Repo) FindBySession(ctx context.Context, sessionId int) ([]models.Packet, error) {
+	rows, err := r.db.QueryContext(ctx, `
         SELECT 
+            measurement_id,
             AVG(rssi) as avg_rssi,
             AVG(snrl) as avg_snrl,
             AVG(latitude) as avg_latitude,
@@ -267,16 +183,21 @@ func (r *Repo) FindById(sessionId int) ([]models.Packet, error) {
 	var packets []models.Packet
 	for rows.Next() {
 		var packet models.Packet
+		var timestamp string
 		err := rows.Scan(
+			&packet.MeasurementId,
 			&packet.RSSI,
 			&packet.SNRL,
 			&packet.Coordinate.Latitude,
 			&packet.Coordinate.Longitude,
 			&packet.Hdop,
-			&packet.Timestamp,
+			&timestamp,
 		)
 		if err != nil {
 			return nil, err
+		}
+		if packet.Timestamp, err = time.Parse(models.TimeLayout, timestamp); err != nil {
+			log.Printf("Unexpected packet timestamp %q: %v", timestamp, err)
 		}
 		packets = append(packets, packet)
 	}
@@ -292,22 +213,48 @@ func (r *Repo) FindById(sessionId int) ([]models.Packet, error) {
 	return packets, nil
 }
 
-func (r *Repo) FindLastRequestId() (int, error) {
-	var lastRequestId int
-	err := r.db.QueryRow("SELECT COALESCE(MAX(request_id), 0)" +
-		" FROM packets").Scan(&lastRequestId)
-	if err != nil {
-		return 0, fmt.Errorf("failed to get last request ID: %w", err)
-	}
-	return lastRequestId, nil
-}
-
-func (r *Repo) FindLastSessionId() (int, error) {
+func (r *Repo) FindLastSessionId(ctx context.Context) (int, error) {
 	var lastSessionId int
-	err := r.db.QueryRow("SELECT COALESCE(MAX(id), 0)" +
+	err := r.db.QueryRowContext(ctx, "SELECT COALESCE(MAX(id), 0)"+
 		" FROM sessions").Scan(&lastSessionId)
 	if err != nil {
-		return 0, fmt.Errorf("failed to get last request ID: %w", err)
+		return 0, fmt.Errorf("failed to get last session ID: %w", err)
 	}
 	return lastSessionId, nil
+}
+
+func (r *Repo) AddSettingsToSession(ctx context.Context, sessionId int, sf, tx, bw float32) error {
+	res, err := r.db.ExecContext(ctx, `
+		UPDATE sessions
+		SET sf = $2, tx = $3, bw = $4
+		WHERE id = $1
+	`, sessionId, sf, tx, bw)
+	if err != nil {
+		return fmt.Errorf("failed to update session settings: %w", err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return fmt.Errorf("session with id %d not found", sessionId)
+	}
+
+	return nil
+}
+
+func (r *Repo) CheckSettings(ctx context.Context, sessionId int) (missing bool, hasPackets bool, err error) {
+	err = r.db.QueryRowContext(ctx, `
+        SELECT (sf = 0 OR bw = 0 OR tx = 0),
+               EXISTS (SELECT 1 FROM packets WHERE session_id = $1)
+        FROM sessions
+        WHERE id = $1
+    `, sessionId).Scan(&missing, &hasPackets)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, false, fmt.Errorf("session %d: %w", sessionId, ErrNotFound)
+	}
+	if err != nil {
+		return false, false, fmt.Errorf("failed to check settings: %w", err)
+	}
+	return missing, hasPackets, nil
 }
