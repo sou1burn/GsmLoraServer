@@ -37,7 +37,7 @@ func getenv(key, def string) string {
 }
 
 func LoadConfig() *Config {
-	if err := godotenv.Load(".env"); err != nil {
+	if err := godotenv.Load("db.env"); err != nil {
 		log.Println("No .env file found")
 	}
 	return &Config{

@@ -6,8 +6,9 @@ import (
 	"Lora_Esp_Gsm_Gps_project/internal/esp"
 	"Lora_Esp_Gsm_Gps_project/internal/postgres"
 	"Lora_Esp_Gsm_Gps_project/internal/service"
+	"context"
 	"database/sql"
-	"fmt"
+	"errors"
 )
 
 type App struct {
@@ -29,29 +30,10 @@ func (a *App) InitDB(cfg *configs.Config) error {
 		return err
 	}
 
+	if err = postgres.Migrate(context.Background(), db); err != nil {
+		return errors.Join(err, db.Close())
+	}
 	repo := postgres.NewPostgresRepo(db)
-	err, err1 := repo.InitTables()
-	if err != nil || err1 != nil {
-		err := db.Close()
-		if err != nil {
-			return err
-		}
-		return fmt.Errorf("failed to init tables: %w", err)
-	}
-	err = repo.InitializeSessionCounts()
-	if err != nil {
-		err := db.Close()
-		if err != nil {
-			return err
-		}
-	}
-	err = repo.CreateCountingTrigger()
-	if err != nil {
-		err := db.Close()
-		if err != nil {
-			return err
-		}
-	}
 	if a.DataService == nil {
 		a.DataService = service.NewDataService(a.EspConnector)
 	}
