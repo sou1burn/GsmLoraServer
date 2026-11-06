@@ -1,0 +1,77 @@
+@startuml
+title Сообщения от ESP и обработка измерений
+
+actor ESP
+participant Server
+participant "handlers" as H
+participant ESPConnector
+participant DataService
+participant "processPackets\n(горутина)" as Proc
+participant Repo
+database Postgres
+actor "Интерфейсы" as UI
+
+== Подключение ==
+ESP -> Server : "IDENTIFY"
+Server -> ESPConnector : SetIP / SetConn(conn) / SetConnected(true)
+Server -> DataService : Broadcast
+DataService -> UI : "MASTER_STATUS CONNECTED"
+Server -> Server : StartStatusMonitor() (один раз)
+
+== Подтверждение настроек ==
+ESP -> Server : "ACK: SSET SF<f>,BW<f>,TX<f>"
+Server -> UI : "SETTINGS_ACK: SF: ..., BW: ..., TX: ..."
+Server ->> DataService : SetSettingsForSession(ctx, params)
+DataService -> Repo : CheckSettings(CurrentSession)
+alt настроек нет и пакетов нет
+  DataService -> Repo : AddSettingsToSession
+  Repo -> Postgres : UPDATE sessions SET sf, bw, tx
+else в сессии уже есть пакеты
+  DataService -> UI : "ALREADY_SET"
+end
+
+== Измерение ==
+ESP -> Server : "MEASUREMENT: {id, packet_number, rssi, snr, hdop, coordinate, timestamp?}"
+Server -> H : ParsePacketData(json)
+note right of H
+  timestamp из пакета (RFC 3339),
+  иначе — время приёма
+end note
+alt измерение не запущено (нет START_MEASUREMENT)
+  Server -> Server : пакет пропускается
+else запущено
+  Server -> DataService : ProcessPacketData(packet)
+  alt в packetChan есть место
+    DataService -> Proc : packetChan <- packet
+  else канал переполнен
+    DataService -> Repo : Save(packet, CurrentSession)
+    DataService ->> DataService : DrainDataChannel()
+  end
+end
+
+Proc -> Repo : Save(ctx, packet, CurrentSession)
+Repo -> Postgres : INSERT INTO packets
+note right of Postgres : триггер update_session_count\nобновляет sessions.count
+Proc -> Proc : buffers[measurement_id][packet_number-1] = packet
+alt собраны все 10 пакетов\nили 15 с нет новых пакетов
+  Proc -> Proc : calculateAverage()
+  Proc -> DataService : SendPacketToClients(avg)
+  DataService -> UI : "MEASUREMENT: [time, rssi, snr, hdop, lat, lon]"
+end
+
+== Статусы ==
+ESP -> Server : "ACK" (heartbeat)
+Server -> UI : "MASTER_STATUS CONNECTED"
+ESP -> Server : "MASTER_STATUS <s>" / "SLAVE_STATUS <s>"
+Server -> UI : "MASTER_STATUS ..." / "SLAVE_STATUS ..."
+loop каждые 15 с
+  Server -> Server : checkAndUpdateStatus()
+  alt нет обновлений больше 120 с
+    Server -> UI : "MASTER_STATUS DISCONNECTED" / "SLAVE_STATUS DISCONNECTED"
+  end
+end
+
+== Обрыв соединения ==
+ESP -[#red]x Server : закрытие / TCP keepalive
+Server -> ESPConnector : SetConnected(false), SetConn(nil)
+@enduml

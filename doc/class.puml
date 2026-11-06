@@ -1,168 +1,183 @@
 @startuml
-title Core classes and relationships
+title Компоненты и основные типы
 
-package models {
+class "main.go" as main <<entry>> {
+  + main()
+}
+
+package cmd/app {
+  class App {
+    + DB : *sql.DB
+    + DataService : *service.DataService
+    + EspConnector : *esp.ESPConnector
+    + InitService(connector)
+    + InitDB(cfg) : error
+    + Close() : error
+  }
+}
+
+package cmd/server {
+  class Server {
+    - mutex : sync.Mutex
+    - measurementHandler : core.MeasurementHandler
+    - connector : esp.Connector
+    - waitList : []net.Conn
+    - isMeasurementStarted : atomic.Bool
+    - monitorOnce : sync.Once
+    + MasterState : DeviceStatus
+    + SlaveState : DeviceStatus
+    + StartServer(port) : error
+    + Serve(ln) : error
+    + HandleConnection(conn) : error
+    + HandleSetSettings(conn, message)
+    + HandleGetMeasurementSessions(ctx, conn)
+    + HandleAddSession(ctx, conn, session)
+    + HandleRemoveSession(ctx, conn, id)
+    + HandleEspConnection(conn)
+    + SendMasterStatus(status) : error
+    + SendSlaveStatus(status) : error
+    + StartStatusMonitor()
+    + SetSettingsForSession(ctx, params)
+  }
+
+  class DeviceStatus {
+    + LastUpdated : time.Time
+    + Status : string
+  }
+}
+
+package internal/core {
+  interface MeasurementHandler {
+    + ProcessPacketData(packet) : error
+    + ProcessInterfaceSettingChange(msg) : error
+    + GetAllSessions(ctx) : ([]Session, error)
+    + SendAllSessions(conn, data) : error
+    + SaveSession(ctx, session) : error
+    + RemoveSession(ctx, id) : error
+    + AddPendingMessage(message, dest, typ)
+    + GetAllSessionMeasurements(ctx, id) : ([]Packet, error)
+    + SendSessionPackets(id, packets) : error
+    + SetSettingsForSession(ctx, params) : error
+    + AddClient(conn)
+    + RemoveClient(conn)
+    + Broadcast(msg) : error
+  }
+}
+
+package internal/service {
+  class DataService {
+    - ctx : context.Context
+    - packetChan : chan *Packet
+    - espConnector : *esp.ESPConnector
+    - clients : map[net.Conn]struct{}
+    + Repo : Repository
+    + PendingMessages : map[reflect.Type]*PendingMessage
+    + StartProcessing(ctx)
+    - processPackets()
+    - processPendingMessages()
+    + PendingTick()
+    + DrainDataChannel() : error
+    + SendPacketToClients(packet)
+  }
+
+  interface Repository {
+    + Save(ctx, packet, sessionId) : error
+    + SaveSession(ctx, session) : error
+    + RemoveSession(ctx, id) : error
+    + GetAllSessions(ctx) : ([]Session, error)
+    + FindBySession(ctx, id) : ([]Packet, error)
+    + FindLastSessionId(ctx) : (int, error)
+    + CheckSettings(ctx, id) : (bool, bool, error)
+    + AddSettingsToSession(ctx, id, sf, tx, bw) : error
+  }
+
+  class PendingMessage {
+    + Destination : models.Destination
+    + Type : handlers.Message
+    + Message : string
+    + Timestamp : time.Time
+  }
+
+  class measurementBuffer {
+    packets : []*Packet  (10 шт.)
+    deadline : time.Time
+  }
+}
+
+package internal/esp {
+  interface Connector
+  class ESPConnector {
+    - Conn : net.Conn
+    - isConnected : bool
+    + CurrentSession : int
+    + SetConn(conn)
+    + SetConnected(bool)
+    + IsConnected() : bool
+    + GetCurrentSession() : int
+    + SendCommand(command, sessionId) : error
+    + SendParamsToDevice(params) : error
+  }
+}
+
+package internal/handlers {
+  class "ParseClientMessage()" as Parse <<function>>
+  class PacketParser {
+    + ParsePacketData(json) : (Packet, error)
+  }
+}
+
+package internal/postgres {
+  class Repo {
+    - db : *sql.DB
+  }
+  class "Migrate(ctx, db)" as Migrate <<function>>
+}
+
+package internal/models {
   class Packet {
-    + RequestId : int
-    + RSSI : int
+    + MeasurementId : int
+    + PacketNum : int
+    + RSSI : float64
     + SNRL : float64
     + Coordinate : Coordinate
     + Hdop : float32
-    + Timestamp : string
+    + Timestamp : time.Time
   }
-
-  class Params {
-    + Bandwidth : float32
-    + Sf : float32
-    + Tx : float32
+  class Coordinate {
+    + Latitude : float64
+    + Longitude : float64
   }
-
   class Session {
     + Id : int
     + Name : string
     + StartTime : string
     + EndTime : string
     + Count : int
+    + Sf, Tx, Bandwidth : float32
+  }
+  class Params {
+    + Sf, Tx, Bandwidth : float32
   }
 }
 
-class DataService {
-  - packetChan : chan *models.Packet
-  - Repo : *postgres.Repo
-  - interfaceSettingsChange : chan *models.Params
-  - mu : sync.RWMutex
-  - isProcessing : bool
-  - espConnector : *esp.ESPConnector
-  - clients : map[net.Conn]models.Destination
-  - PendingMessages : map[reflect.Type]*PendingMessage
-  - pendingMessagesLock : sync.RWMutex
-
-  + NewDataService(connector *esp.ESPConnector) : *DataService
-  + EspInitializer(connector esp.Connector) : error
-  + StartProcessing()
-  + GetChannelStatus() : (int, int)
-  + GetChannelUsage() : float64
-  + GetPacketChannel() : <-chan *models.Packet
-  + ProcessPacketData(buffer string) : error
-  + DrainDataChannel() : error
-  + ProcessInterfaceSettingChange(conn net.Conn, message string) : error
-  + handleESPData(data string)
-  + processPackets()
-  + processPendingMessages()
-  + processInterfaceSettingsChange()
-  + GetMeasurements(requestID int) : ([]models.Packet, error)
-  + SendMeasurementCommand(conn net.Conn, command string, sessionId int) : error
-  + SendMeasurementsToClient(conn net.Conn, data string) : error
-  + SendAllSessions(conn net.Conn, data string) : error
-  + GetAllSessions() : ([]models.Session, error)
-  + SaveSession(session models.Session) : error
-  + RemoveSession(sessionId int) : error
-  + AddClient(conn net.Conn, destination models.Destination)
-  + SendPacketToClient(conn net.Conn, packet models.Packet)
-  + FindClientConnection() : (net.Conn, bool)
-  + FindEspConnection() : (net.Conn, bool)
-  + AddPendingMessage(message string, destination models.Destination, messageType core.Message)
-  + onEspConnected()
-  + startPendingProcessing()
-}
-
-class ESPConnector {
-  - IP : string
-  - Port : string
-  - Conn : net.Conn
-  - isConnected : bool
-  - mutex : sync.RWMutex
-  - CurrentSession : int
-
-  + NewESPConnector() : *ESPConnector
-  + GetIP() : string
-  + GetPort() : string
-  + GetConn() : net.Conn
-  + SetIP(ip string)
-  + SetPort(port string)
-  + SetConn(conn net.Conn)
-  + SetConnected(connected bool)
-  + SetCurrentSession(session int)
-  + Connect(ip, port string) : error
-  + SendCommand(command string, sessionId int) : error
-  + SendParamsToDevice(params models.Params) : error
-  + ProcessInterfaceSettingChange(message string) : error
-  + IsConnected() : bool
-  + Close() : error
-  + MaintainConnection(ip, port string, dataHandler func(string))
-  + ListeningStart(dataHandler func(string)) : error
-}
-
-interface Repository {
-  + FindById(ctx context.Context, id int) : (interface{}, error)
-}
-
-class PostgresRepo {
-  - db : *sql.DB
-
-  + NewPostgresRepo(db *sql.DB) : *Repo
-  + NewPostgresDB(config configs.Config) : (*sql.DB, error)
-  + InitTables() : (error, error)
-  + CreatePacketsTable() : error
-  + CreateSessionsTable() : error
-  + Save(packet *models.Packet, sessionId int) : error
-  + SaveSession(session models.Session) : error
-  + RemoveSession(sessionId int) : error
-  + GetAllSessions() : ([]models.Session, error)
-  + FindById(requestId int) : ([]models.Packet, error)
-  + FindLastRequestId() : (int, error)
-  + FindLastSessionId() : (int, error)
-}
-
-note right of PostgresRepo
-  PostgresRepo represents the concrete DB.
-end note
-
-class Server {
-  - clients : map[string]*Client
-  - mutex : sync.RWMutex
-  - measurementHandler : core.MeasurementHandler
-  - connector : esp.Connector
-  - waitList : []net.Conn
-  - waitListMutex : sync.RWMutex
-
-  + NewServer(h core.MeasurementHandler, connector esp.Connector) : *Server
-  + StartServer(port string) : error
-  + HandleConnection(conn net.Conn) : error
-  + registerClient(clientId string, conn net.Conn)
-  + unregisterClient(deviceID string)
-  + waitForEspConnection(conn net.Conn) : error
-  + addWaitingClient(conn net.Conn)
-  + removeWaitingClient(conn net.Conn)
-  + removeAllWaitingClients()
-  + notifyWaitingClients()
-  + updateClientInteraction(clientID string)
-  + deleteAllClients()
-  + HandleSetSettings(conn net.Conn, message string)
-  + handleStartMeasurement(conn net.Conn, sessionId int)
-  + HandleGetMeasurementSessions(conn net.Conn)
-  + HandleAddSession(conn net.Conn, session models.Session)
-  + HandleRemoveSession(conn net.Conn, sessionId int)
-  + HandleEspConnection(conn net.Conn)
-}
-
-class Client {
-  - conn : net.Conn
-  - device : string
-  - lastInteraction : string
-  - isActive : bool
-  - mutex : sync.RWMutex
-
-  + setInactive()
-  + isConnectionAlive() : bool
-}
-
-' Relationships
-DataService o-- ESPConnector
-DataService o-- Repository
-PostgresRepo ..|> Repository
-Server --> DataService
-Server --> ESPConnector
-ESPConnector --> Packet : produces
-PostgresRepo --> Packet : persists
+main --> App
+main --> Server
+App --> DataService
+App --> Repo
+App ..> Migrate
+Server --> MeasurementHandler
+Server --> Connector
+Server *-- DeviceStatus
+Server ..> Parse
+Parse ..> PacketParser
+DataService ..|> MeasurementHandler
+DataService --> ESPConnector
+DataService --> Repository
+DataService *-- PendingMessage
+DataService ..> measurementBuffer
+ESPConnector ..|> Connector
+Repo ..|> Repository
+Packet *-- Coordinate
+Repository ..> Packet
+Repository ..> Session
 @enduml

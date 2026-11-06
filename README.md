@@ -117,4 +117,8 @@ go test -race ./...   # нужен cgo (gcc)
 ## Документация
 
 - [Сценарии взаимодействия с ESP](doc/Esp_scenarios.pdf)
-- Диаграммы PlantUML: `doc/*.puml`
+- Диаграммы PlantUML в `doc/`:
+  - `class.puml` — компоненты и основные типы
+  - `server.puml` — обработка команд интерфейса
+  - `esp.puml` — сообщения от ESP, усреднение измерений, статусы
+  - `db.puml` — схема БД
