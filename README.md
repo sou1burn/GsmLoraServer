@@ -1,41 +1,120 @@
-# Сервер для управления взаимодействием клиентского [интерфейса](https://github.com/Ykio7614/LoRaStandInterface) и мастер-устройства LoRa
+# GsmLoraServer
 
-## Скачивание и запуск
-Скачивание:
+TCP-сервер между клиентским [интерфейсом](https://github.com/Ykio7614/LoRaStandInterface) и мастер-устройством LoRa (ESP32).
+Принимает команды от интерфейса, передаёт их на ESP, усредняет пришедшие измерения и сохраняет их в PostgreSQL по сессиям.
 
 ```
-git clone https://github.com/RedBlackHoodie/GsmLoraServer.git
+Интерфейс ──TCP──▶ GsmLoraServer ──TCP──▶ ESP32 (master) ~~LoRa~~ slave
+                         │
+                     PostgreSQL
 ```
-Запуск:
-```
-cd "path-to-folder GsmLoraServer"
 
-docker-compose build
+## Запуск
 
-docker compose up -d
+Нужны Docker и Docker Compose.
+
 ```
+git clone https://github.com/sou1burn/GsmLoraServer.git
+cd GsmLoraServer
+docker compose up -d --build
+```
+
+Приложение работает в `network_mode: host` и слушает порт из `PORT` (по умолчанию `9090`).
+Postgres публикуется на `127.0.0.1:5433`. Схема БД создаётся миграциями при старте, руками ничего готовить не нужно.
+
+Сборка с race-детектором: `docker compose -f docker-compoce.race.yaml up -d --build`.
+
+Полностью стенд (сервер + интерфейс) поднимают скрипты `install_everything.sh` и `run_all.sh`.
+
+### Локально без Docker
+
+```
+go run .
+```
+
+Нужен Go 1.25 и доступный Postgres из `db.env`.
+
+## Конфигурация
+
+Читается из env-файлов в рабочей директории (переменные окружения имеют приоритет):
+
+| Файл | Переменные |
+|------|------------|
+| `db.env` | `PORT`, `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`, `ENV`, а также `POSTGRES_*` для контейнера БД |
+| `esp.env` | `ESP_HOST`, `ESP_PORT`, `ESP_MAC`, `ESP_IP` |
+| `client.env` | `CLIENT_IP`, `CLIENT_PORT` |
+
+`make_envs.sh` создаёт эти файлы со значениями по умолчанию.
+
+## Протокол
+
+Текстовый, одно сообщение на строку (`\n`).
+
+**Интерфейс → сервер**
+
+| Команда | Действие |
+|---------|----------|
+| `SET_SETTINGS: SF=<f>, TX=<f>, BW=<f>` | передать параметры LoRa на ESP |
+| `START_MEASUREMENT: <session_id>` | начать измерения в сессии |
+| `GET_MEASUREMENT_SESSIONS` | список сессий + текущие статусы устройств |
+| `ADD_SESSION: [id, name, start, end, count]` | создать сессию |
+| `REMOVE_SESSION: <id>` | удалить сессию с измерениями |
+
+Если ESP не подключён, `SET_SETTINGS` и `START_MEASUREMENT` откладываются и отправляются после подключения (сначала настройки, потом старт).
+
+**ESP → сервер**
+
+| Сообщение | Значение |
+|-----------|----------|
+| `IDENTIFY` | ESP представился, соединение запоминается как мастер |
+| `MEASUREMENT: {json}` | пакет измерения (`rssi`, `snr`, `hdop`, `coordinate`, опционально `timestamp` в RFC 3339) |
+| `ACK: SSET SF<f>,BW<f>,TX<f>` | ESP применил настройки |
+| `ACK` | heartbeat |
+| `MASTER_STATUS <s>` / `SLAVE_STATUS <s>` | статус устройств |
+
+**Сервер → интерфейс**
+
+`SESSIONS: [...]`, `MEASUREMENT: [...]`, `MASTER_STATUS CONNECTED|DISCONNECTED`, `SLAVE_STATUS ...`, `SETTINGS_ACK: ...`, `ALREADY_SET`, `ERROR: <текст>`.
+
+**Сервер → ESP**: `SET_SETTINGS: SF=..., TX=..., BW=...`, `START_MEASUREMENT SESSION_ID=<id>`.
+
+Пакеты буферизуются и усредняются; если 15 с нет новых пакетов, буфер сбрасывается. Если от мастера 120 с ничего не приходит, интерфейсу отправляется `MASTER_STATUS DISCONNECTED`.
+
+## Структура
+
+```
+main.go              точка входа
+cmd/app              сборка зависимостей, подключение к БД
+cmd/server           TCP-сервер, разбор входящих команд, статусы устройств
+internal/handlers    парсинг сообщений протокола
+internal/service     обработка пакетов, отложенные команды, рассылка клиентам
+internal/esp         соединение с ESP32
+internal/postgres    репозиторий и запуск миграций
+db/migrations        SQL-миграции goose (встроены в бинарник)
+test/unit            тесты
+doc                  сценарии и диаграммы
+```
+
+## База данных
+
+Миграции goose применяются автоматически при старте (`postgres.Migrate`). Новая миграция — файл `db/migrations/NNNNN_name.sql` с секциями `-- +goose Up` / `-- +goose Down`.
 
 Полезные команды:
+
 ```
-docker-compose down // остановка сервисов
-docker-compose logs app/postgres // просмотр всех логов до текущего момента
-docker-compose exec postgres -U postgres -d lora_db // вход в интерактивную оболочку PGSql
-docker-compose exec postgres -U postgres -d lora_db -c "QUERY" // исполнение запроса без входа в интерактивную оболочку
+docker compose logs -f app                                          # логи сервера
+docker compose exec postgres psql -U postgres -d lora_db            # консоль psql
+docker compose exec postgres psql -U postgres -d lora_db -c "QUERY" # один запрос
 ```
 
+## Тесты
 
-## Текущие проблемы, о которых известно
-1. Правильно отрабатывает только один сценарий, при котором клиент через интерфейс отправляет настройки устройству, а затем начинает измерения. Будущий фикс: добавление отложенных сообщений
-2. Не работает скрипт нахождения ESP32, нужно его поправить (фикс есть локально, но не проверялся)
-3. Не настроена миграция БД, задача в разработке
-4. 0 тестов
+```
+go test ./...
+go test -race ./...   # нужен cgo (gcc)
+```
 
-### Задача номер один на данный момент
+## Документация
 
-Нужно протестироовать различные сценарии взаимодействия пользователя с интерфейсом и посмотреть логи сервера: при обнаружении в логах сервака паники. Паника в коде приводит к полному перезапуску сервера, нужно продумать либо состояния и откат к ним, либо как-то иначе обходить эту ситуацию
-
-Некоторые сценарии описаны [тут](https://github.com/RedBlackHoodie/GsmLoraServer/blob/dev/doc/Esp_scenarios.pdf)
-
-Также, по хорошему визуализировать взаимодействие сущностей в коде, например в виде столбчатой диаграммы, [пример](https://github.com/RedBlackHoodie/GsmLoraServer/blob/dev/doc/bad_example_of_diagram.pdf)
-
-
+- [Сценарии взаимодействия с ESP](doc/Esp_scenarios.pdf)
+- Диаграммы PlantUML: `doc/*.puml`
