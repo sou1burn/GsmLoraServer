@@ -1,14 +1,15 @@
 package app
 
 import (
-	"Lora_Esp_Gsm_Gps_project/cmd/server"
-	"Lora_Esp_Gsm_Gps_project/configs"
-	"Lora_Esp_Gsm_Gps_project/internal/esp"
-	"Lora_Esp_Gsm_Gps_project/internal/postgres"
-	"Lora_Esp_Gsm_Gps_project/internal/service"
 	"context"
 	"database/sql"
 	"errors"
+
+	"github.com/sou1burn/GsmLoraServer/cmd/server"
+	"github.com/sou1burn/GsmLoraServer/configs"
+	"github.com/sou1burn/GsmLoraServer/internal/esp"
+	"github.com/sou1burn/GsmLoraServer/internal/postgres"
+	"github.com/sou1burn/GsmLoraServer/internal/service"
 )
 
 type App struct {

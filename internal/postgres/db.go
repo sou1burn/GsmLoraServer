@@ -1,8 +1,6 @@
 package postgres
 
 import (
-	"Lora_Esp_Gsm_Gps_project/configs"
-	migrations "Lora_Esp_Gsm_Gps_project/db"
 	"context"
 	"database/sql"
 	"errors"
@@ -10,10 +8,13 @@ import (
 	"log"
 	"time"
 
+	"github.com/sou1burn/GsmLoraServer/configs"
+	migrations "github.com/sou1burn/GsmLoraServer/db"
+
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
 
-	"Lora_Esp_Gsm_Gps_project/internal/models"
+	"github.com/sou1burn/GsmLoraServer/internal/models"
 )
 
 var ErrNotFound = errors.New("not found")
@@ -162,7 +163,7 @@ func (r *Repo) GetAllSessions(ctx context.Context) ([]models.Session, error) {
 
 func (r *Repo) FindBySession(ctx context.Context, sessionId int) ([]models.Packet, error) {
 	rows, err := r.db.QueryContext(ctx, `
-        SELECT 
+        SELECT
             measurement_id,
             AVG(rssi) as avg_rssi,
             AVG(snrl) as avg_snrl,
@@ -170,7 +171,7 @@ func (r *Repo) FindBySession(ctx context.Context, sessionId int) ([]models.Packe
             AVG(longitude) as avg_longitude,
             AVG(hdop) as avg_hdop,
             MAX(timestamp) as last_timestamp
-        FROM packets 
+        FROM packets
         WHERE session_id = $1
         GROUP BY measurement_id
         ORDER BY measurement_id

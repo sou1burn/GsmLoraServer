@@ -1,10 +1,11 @@
 package unit
 
 import (
-	"Lora_Esp_Gsm_Gps_project/internal/esp"
-	"Lora_Esp_Gsm_Gps_project/internal/service"
 	"testing"
 	"time"
+
+	"github.com/sou1burn/GsmLoraServer/internal/esp"
+	"github.com/sou1burn/GsmLoraServer/internal/service"
 )
 
 func TestPendingTickDoesNotDeadlock(t *testing.T) {

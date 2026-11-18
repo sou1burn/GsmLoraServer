@@ -1,4 +1,4 @@
-# Binary 
+# Binary
 *.exe
 *.exe~
 *.dll
@@ -19,5 +19,3 @@ dist/
 # env
 *.env
 *.local
-
-.golangci.yml

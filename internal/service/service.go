@@ -1,10 +1,6 @@
 package service
 
 import (
-	"Lora_Esp_Gsm_Gps_project/internal/core"
-	"Lora_Esp_Gsm_Gps_project/internal/esp"
-	"Lora_Esp_Gsm_Gps_project/internal/handlers"
-	"Lora_Esp_Gsm_Gps_project/internal/models"
 	"context"
 	"encoding/json"
 	"errors"
@@ -16,6 +12,11 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/sou1burn/GsmLoraServer/internal/core"
+	"github.com/sou1burn/GsmLoraServer/internal/esp"
+	"github.com/sou1burn/GsmLoraServer/internal/handlers"
+	"github.com/sou1burn/GsmLoraServer/internal/models"
 )
 
 const measurementTimeout = 15 * time.Second
@@ -320,7 +321,7 @@ func (s *DataService) SendMeasurementsToClient(ctx context.Context, conn net.Con
 	resp := fmt.Sprintf("MEASUREMENT: %s\n", jsonData)
 	_, err = conn.Write([]byte(resp))
 	if err != nil {
-		log.Println(fmt.Errorf("error sending message to client: %v", err))
+		log.Println(fmt.Errorf("error sending message to client: %w", err))
 		return err
 	}
 	log.Printf("Sent commands: %v", data)
@@ -334,7 +335,7 @@ func (s *DataService) SendAllSessions(conn net.Conn, data string) error {
 	log.Printf("Sent message: %s", resp)
 	_, err = conn.Write([]byte(resp))
 	if err != nil {
-		log.Println(fmt.Errorf("error sending message to client: %v", err))
+		log.Println(fmt.Errorf("error sending message to client: %w", err))
 		return err
 	}
 	log.Printf("Sent all sessions data")

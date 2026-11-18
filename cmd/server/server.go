@@ -1,10 +1,6 @@
 package server
 
 import (
-	"Lora_Esp_Gsm_Gps_project/internal/core"
-	"Lora_Esp_Gsm_Gps_project/internal/esp"
-	"Lora_Esp_Gsm_Gps_project/internal/handlers"
-	"Lora_Esp_Gsm_Gps_project/internal/models"
 	"bufio"
 	"context"
 	"errors"
@@ -15,6 +11,11 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/sou1burn/GsmLoraServer/internal/core"
+	"github.com/sou1burn/GsmLoraServer/internal/esp"
+	"github.com/sou1burn/GsmLoraServer/internal/handlers"
+	"github.com/sou1burn/GsmLoraServer/internal/models"
 )
 
 const statusTimeout = 120 * time.Second
@@ -125,8 +126,6 @@ func (s *Server) HandleConnection(conn net.Conn) error {
 				go s.waitForEspConnectionLogged(conn)
 			}
 
-		case handlers.StopMeasurementMessage: // command unused
-			return nil
 		case handlers.GetMeasurementSessionsMessage: //esp not used here
 			s.measurementHandler.AddClient(conn)
 			s.HandleGetMeasurementSessions(ctx, conn)

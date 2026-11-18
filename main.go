@@ -1,15 +1,16 @@
 package main
 
 import (
-	"Lora_Esp_Gsm_Gps_project/cmd/app"
-	"Lora_Esp_Gsm_Gps_project/cmd/server"
-	"Lora_Esp_Gsm_Gps_project/configs"
-	"Lora_Esp_Gsm_Gps_project/internal/esp"
 	"context"
 	"io"
 	"log"
 	"os"
 	"time"
+
+	"github.com/sou1burn/GsmLoraServer/cmd/app"
+	"github.com/sou1burn/GsmLoraServer/cmd/server"
+	"github.com/sou1burn/GsmLoraServer/configs"
+	"github.com/sou1burn/GsmLoraServer/internal/esp"
 )
 
 var (
@@ -19,7 +20,7 @@ var (
 
 func main() {
 	log.Printf("Lora ESP GSM GPS Project v.%s (built %s)\n", version, buildTime)
-	logFile, err := os.OpenFile("app.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	logFile, err := os.OpenFile("app.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {
 		log.Printf("Не удалось открыть файл для логов: %v", err)
 	} else {

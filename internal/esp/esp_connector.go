@@ -1,7 +1,6 @@
 package esp
 
 import (
-	"Lora_Esp_Gsm_Gps_project/internal/models"
 	"errors"
 	"fmt"
 	"log"
@@ -9,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/sou1burn/GsmLoraServer/internal/models"
 )
 
 type ESPConnector struct {
@@ -159,7 +160,7 @@ func (e *ESPConnector) SendCommand(command string, sessionId int) error {
 			e.Conn.Close()
 			e.Conn = nil
 		}
-		return fmt.Errorf("failed to send command to ESP32: %v", err)
+		return fmt.Errorf("failed to send command to ESP32: %w", err)
 	}
 
 	log.Printf("Command sent to ESP32: %s", message)
@@ -179,7 +180,7 @@ func (e *ESPConnector) SendParamsToDevice(params models.Params) error {
 
 	_, err := e.Conn.Write([]byte(message + "\n"))
 	if err != nil {
-		return fmt.Errorf("failed to send params to ESP32: %v", err)
+		return fmt.Errorf("failed to send params to ESP32: %w", err)
 	}
 
 	log.Printf("Params sent to ESP32: %s", message)

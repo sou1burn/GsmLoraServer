@@ -1,10 +1,6 @@
 package unit
 
 import (
-	"Lora_Esp_Gsm_Gps_project/cmd/server"
-	"Lora_Esp_Gsm_Gps_project/internal/esp"
-	"Lora_Esp_Gsm_Gps_project/internal/models"
-	"Lora_Esp_Gsm_Gps_project/internal/service"
 	"bufio"
 	"context"
 	"errors"
@@ -15,6 +11,11 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sou1burn/GsmLoraServer/cmd/server"
+	"github.com/sou1burn/GsmLoraServer/internal/esp"
+	"github.com/sou1burn/GsmLoraServer/internal/models"
+	"github.com/sou1burn/GsmLoraServer/internal/service"
 )
 
 var errFakeNotFound = errors.New("not found")

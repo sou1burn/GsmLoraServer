@@ -1,10 +1,11 @@
 package core
 
 import (
-	"Lora_Esp_Gsm_Gps_project/internal/models"
 	"context"
 	"database/sql"
 	"net"
+
+	"github.com/sou1burn/GsmLoraServer/internal/models"
 )
 
 type Message interface {

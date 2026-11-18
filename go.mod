@@ -1,4 +1,4 @@
-module Lora_Esp_Gsm_Gps_project
+module github.com/sou1burn/GsmLoraServer
 
 go 1.25.1
 

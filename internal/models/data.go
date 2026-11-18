@@ -28,13 +28,6 @@ type Coordinate struct {
 	Longitude float64 `json:"longitude,string"`
 }
 
-type LoRaData struct {
-	RequestId int     `json:"id"`
-	RSSI      int     `json:"rssi"`
-	SNR       float64 `json:"snr"`
-	Timestamp string  `json:"timestamp"`
-}
-
 type Packet struct {
 	MeasurementId int        `json:"id"`
 	PacketNum     int        `json:"packet_number"`

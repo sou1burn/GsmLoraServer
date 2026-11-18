@@ -3,16 +3,17 @@
 package unit
 
 import (
-	server2 "Lora_Esp_Gsm_Gps_project/cmd/server"
-	"Lora_Esp_Gsm_Gps_project/internal/models"
-	"Lora_Esp_Gsm_Gps_project/mocks"
 	"errors"
-	"github.com/golang/mock/gomock"
 	"net"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/golang/mock/gomock"
+
+	server2 "github.com/sou1burn/GsmLoraServer/cmd/server"
+	"github.com/sou1burn/GsmLoraServer/internal/models"
 )
 
 type MockConn struct {

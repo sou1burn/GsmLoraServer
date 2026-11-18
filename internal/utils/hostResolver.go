@@ -21,7 +21,7 @@ func ResolveEspHost(hostname, mac string) (string, error) {
 
 	iface, ipNet, err := getNetworkInterface()
 	if err != nil {
-		return "", fmt.Errorf("failed to get network interface: %v", err)
+		return "", fmt.Errorf("failed to get network interface: %w", err)
 	}
 	printNetworkInfo(iface, ipNet)
 	fmt.Printf("Ищем устройство с MAC: %s\n", mac)
@@ -93,7 +93,7 @@ func activeNetworkScan(iface *net.Interface, ipNet *net.IPNet, targetMAC string)
 	cmd := exec.Command("arp-scan", "--interface", iface.Name, "--localnet")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("arp-scan failed: %v", err)
+		return "", fmt.Errorf("arp-scan failed: %w", err)
 	}
 
 	return parseArpScanOutput(string(output), targetMAC)
