@@ -345,42 +345,6 @@ func TestParseRemoveSessionMessage(t *testing.T) {
 	}
 }
 
-func TestParseTime(t *testing.T) {
-	expected := time.Date(2023, 1, 1, 12, 0, 0, 123000000, time.UTC)
-	validTimeStr := expected.String()
-
-	tests := []struct {
-		name    string
-		input   string
-		want    time.Time
-		wantErr bool
-	}{
-		{
-			name:  "valid format",
-			input: validTimeStr,
-			want:  expected,
-		},
-		{
-			name:    "invalid format",
-			input:   "2023-01-01T12:00:00Z",
-			wantErr: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := handlers.ParseTime(tt.input)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("ParseTime() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-			if !tt.wantErr && !got.Equal(tt.want) {
-				t.Errorf("ParseTime() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestParseIncomingMeasurement(t *testing.T) {
 	tests := []struct {
 		name    string

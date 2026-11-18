@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -27,10 +26,9 @@ type measurementBuffer struct {
 }
 
 type PendingMessage struct {
-	Destination models.Destination
-	Type        handlers.Message
-	Message     string
-	Timestamp   time.Time
+	Type      handlers.Message
+	Message   string
+	Timestamp time.Time
 }
 
 type Repository interface {
@@ -39,7 +37,6 @@ type Repository interface {
 	RemoveSession(ctx context.Context, sessionId int) error
 	GetAllSessions(ctx context.Context) ([]models.Session, error)
 	FindBySession(ctx context.Context, sessionId int) ([]models.Packet, error)
-	FindLastSessionId(ctx context.Context) (int, error)
 	CheckSettings(ctx context.Context, sessionId int) (bool, bool, error)
 	AddSettingsToSession(ctx context.Context, sessionId int, sf, tx, bw float32) error
 }
@@ -85,10 +82,6 @@ func (s *DataService) GetChannelStatus() (int, int) {
 func (s *DataService) GetChannelUsage() float64 {
 	current, capacity := s.GetChannelStatus()
 	return float64(current) / float64(capacity) * 100
-}
-
-func (s *DataService) GetPacketChannel() <-chan *models.Packet {
-	return s.packetChan
 }
 
 func (s *DataService) ProcessPacketData(packet models.Packet) error {
@@ -288,46 +281,6 @@ func (s *DataService) processPendingMessages() {
 	}
 }
 
-func (s *DataService) GetMeasurements(ctx context.Context, sessionId int) ([]models.Packet, error) {
-	if sessionId == 0 {
-		var err error
-		sessionId, err = s.Repo.FindLastSessionId(ctx)
-		if err != nil {
-			log.Printf("Error getting last session id: %v", err)
-			return nil, err
-		}
-	}
-
-	data, err := s.Repo.FindBySession(ctx, sessionId)
-	if err != nil {
-		log.Printf("Error getting measurements for session %d: %v", sessionId, err)
-		return nil, err
-	}
-
-	return data, nil
-}
-
-func (s *DataService) SendMeasurementsToClient(ctx context.Context, conn net.Conn, data string) error {
-	packets, err := s.GetMeasurements(ctx, 0)
-	if err != nil {
-		log.Printf("Error getting measurements: %v", err)
-		return err
-	}
-	jsonData, err := json.Marshal(packets)
-	if err != nil {
-		log.Printf("Error marshalling measurements: %v", err)
-		return err
-	}
-	resp := fmt.Sprintf("MEASUREMENT: %s\n", jsonData)
-	_, err = conn.Write([]byte(resp))
-	if err != nil {
-		log.Println(fmt.Errorf("error sending message to client: %w", err))
-		return err
-	}
-	log.Printf("Sent commands: %v", data)
-	return nil
-}
-
 func (s *DataService) SendAllSessions(conn net.Conn, data string) error {
 	var err error
 
@@ -410,15 +363,14 @@ func (s *DataService) SendPacketToClients(packet models.Packet) {
 	log.Printf("Message %s sent to clients", message)
 }
 
-func (s *DataService) AddPendingMessage(message string, destination models.Destination, messageType core.Message) {
+func (s *DataService) AddPendingMessage(message string, messageType core.Message) {
 	s.pendingMessagesLock.Lock()
 	defer s.pendingMessagesLock.Unlock()
 
 	msg := &PendingMessage{
-		Destination: destination,
-		Type:        messageType,
-		Message:     message,
-		Timestamp:   time.Now(),
+		Type:      messageType,
+		Message:   message,
+		Timestamp: time.Now(),
 	}
 
 	msgType := reflect.TypeOf(messageType)

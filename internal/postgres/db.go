@@ -214,16 +214,6 @@ func (r *Repo) FindBySession(ctx context.Context, sessionId int) ([]models.Packe
 	return packets, nil
 }
 
-func (r *Repo) FindLastSessionId(ctx context.Context) (int, error) {
-	var lastSessionId int
-	err := r.db.QueryRowContext(ctx, "SELECT COALESCE(MAX(id), 0)"+
-		" FROM sessions").Scan(&lastSessionId)
-	if err != nil {
-		return 0, fmt.Errorf("failed to get last session ID: %w", err)
-	}
-	return lastSessionId, nil
-}
-
 func (r *Repo) AddSettingsToSession(ctx context.Context, sessionId int, sf, tx, bw float32) error {
 	res, err := r.db.ExecContext(ctx, `
 		UPDATE sessions

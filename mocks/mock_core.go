@@ -6,7 +6,6 @@ package core
 
 import (
 	context "context"
-	sql "database/sql"
 	net "net"
 	reflect "reflect"
 
@@ -52,160 +51,6 @@ func (mr *MockMessageMockRecorder) Type() *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Type", reflect.TypeOf((*MockMessage)(nil).Type))
 }
 
-// MockRepository is a mock of Repository interface.
-type MockRepository struct {
-	ctrl     *gomock.Controller
-	recorder *MockRepositoryMockRecorder
-}
-
-// MockRepositoryMockRecorder is the mock recorder for MockRepository.
-type MockRepositoryMockRecorder struct {
-	mock *MockRepository
-}
-
-// NewMockRepository creates a new mock instance.
-func NewMockRepository(ctrl *gomock.Controller) *MockRepository {
-	mock := &MockRepository{ctrl: ctrl}
-	mock.recorder = &MockRepositoryMockRecorder{mock}
-	return mock
-}
-
-// EXPECT returns an object that allows the caller to indicate expected use.
-func (m *MockRepository) EXPECT() *MockRepositoryMockRecorder {
-	return m.recorder
-}
-
-// FindById mocks base method.
-func (m *MockRepository) FindById(ctx context.Context, id int) (interface{}, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "FindById", ctx, id)
-	ret0, _ := ret[0].(interface{})
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// FindById indicates an expected call of FindById.
-func (mr *MockRepositoryMockRecorder) FindById(ctx, id interface{}) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "FindById", reflect.TypeOf((*MockRepository)(nil).FindById), ctx, id)
-}
-
-// MockService is a mock of Service interface.
-type MockService struct {
-	ctrl     *gomock.Controller
-	recorder *MockServiceMockRecorder
-}
-
-// MockServiceMockRecorder is the mock recorder for MockService.
-type MockServiceMockRecorder struct {
-	mock *MockService
-}
-
-// NewMockService creates a new mock instance.
-func NewMockService(ctrl *gomock.Controller) *MockService {
-	mock := &MockService{ctrl: ctrl}
-	mock.recorder = &MockServiceMockRecorder{mock}
-	return mock
-}
-
-// EXPECT returns an object that allows the caller to indicate expected use.
-func (m *MockService) EXPECT() *MockServiceMockRecorder {
-	return m.recorder
-}
-
-// ProcessData mocks base method.
-func (m *MockService) ProcessData(data interface{}) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "ProcessData", data)
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// ProcessData indicates an expected call of ProcessData.
-func (mr *MockServiceMockRecorder) ProcessData(data interface{}) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ProcessData", reflect.TypeOf((*MockService)(nil).ProcessData), data)
-}
-
-// MockApp is a mock of App interface.
-type MockApp struct {
-	ctrl     *gomock.Controller
-	recorder *MockAppMockRecorder
-}
-
-// MockAppMockRecorder is the mock recorder for MockApp.
-type MockAppMockRecorder struct {
-	mock *MockApp
-}
-
-// NewMockApp creates a new mock instance.
-func NewMockApp(ctrl *gomock.Controller) *MockApp {
-	mock := &MockApp{ctrl: ctrl}
-	mock.recorder = &MockAppMockRecorder{mock}
-	return mock
-}
-
-// EXPECT returns an object that allows the caller to indicate expected use.
-func (m *MockApp) EXPECT() *MockAppMockRecorder {
-	return m.recorder
-}
-
-// Close mocks base method.
-func (m *MockApp) Close() error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Close")
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// Close indicates an expected call of Close.
-func (mr *MockAppMockRecorder) Close() *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Close", reflect.TypeOf((*MockApp)(nil).Close))
-}
-
-// GetDB mocks base method.
-func (m *MockApp) GetDB() *sql.DB {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetDB")
-	ret0, _ := ret[0].(*sql.DB)
-	return ret0
-}
-
-// GetDB indicates an expected call of GetDB.
-func (mr *MockAppMockRecorder) GetDB() *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetDB", reflect.TypeOf((*MockApp)(nil).GetDB))
-}
-
-// GetRepo mocks base method.
-func (m *MockApp) GetRepo() core.Repository {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetRepo")
-	ret0, _ := ret[0].(core.Repository)
-	return ret0
-}
-
-// GetRepo indicates an expected call of GetRepo.
-func (mr *MockAppMockRecorder) GetRepo() *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetRepo", reflect.TypeOf((*MockApp)(nil).GetRepo))
-}
-
-// GetService mocks base method.
-func (m *MockApp) GetService() core.Service {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetService")
-	ret0, _ := ret[0].(core.Service)
-	return ret0
-}
-
-// GetService indicates an expected call of GetService.
-func (mr *MockAppMockRecorder) GetService() *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetService", reflect.TypeOf((*MockApp)(nil).GetService))
-}
-
 // MockMeasurementHandler is a mock of MeasurementHandler interface.
 type MockMeasurementHandler struct {
 	ctrl     *gomock.Controller
@@ -242,15 +87,15 @@ func (mr *MockMeasurementHandlerMockRecorder) AddClient(conn interface{}) *gomoc
 }
 
 // AddPendingMessage mocks base method.
-func (m *MockMeasurementHandler) AddPendingMessage(message string, dest models.Destination, typ core.Message) {
+func (m *MockMeasurementHandler) AddPendingMessage(message string, typ core.Message) {
 	m.ctrl.T.Helper()
-	m.ctrl.Call(m, "AddPendingMessage", message, dest, typ)
+	m.ctrl.Call(m, "AddPendingMessage", message, typ)
 }
 
 // AddPendingMessage indicates an expected call of AddPendingMessage.
-func (mr *MockMeasurementHandlerMockRecorder) AddPendingMessage(message, dest, typ interface{}) *gomock.Call {
+func (mr *MockMeasurementHandlerMockRecorder) AddPendingMessage(message, typ interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AddPendingMessage", reflect.TypeOf((*MockMeasurementHandler)(nil).AddPendingMessage), message, dest, typ)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AddPendingMessage", reflect.TypeOf((*MockMeasurementHandler)(nil).AddPendingMessage), message, typ)
 }
 
 // Broadcast mocks base method.
@@ -295,21 +140,6 @@ func (m *MockMeasurementHandler) GetAllSessions(ctx context.Context) ([]models.S
 func (mr *MockMeasurementHandlerMockRecorder) GetAllSessions(ctx interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetAllSessions", reflect.TypeOf((*MockMeasurementHandler)(nil).GetAllSessions), ctx)
-}
-
-// GetMeasurements mocks base method.
-func (m *MockMeasurementHandler) GetMeasurements(ctx context.Context, sessionId int) ([]models.Packet, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetMeasurements", ctx, sessionId)
-	ret0, _ := ret[0].([]models.Packet)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// GetMeasurements indicates an expected call of GetMeasurements.
-func (mr *MockMeasurementHandlerMockRecorder) GetMeasurements(ctx, sessionId interface{}) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetMeasurements", reflect.TypeOf((*MockMeasurementHandler)(nil).GetMeasurements), ctx, sessionId)
 }
 
 // ProcessInterfaceSettingChange mocks base method.
@@ -392,20 +222,6 @@ func (m *MockMeasurementHandler) SendAllSessions(conn net.Conn, data string) err
 func (mr *MockMeasurementHandlerMockRecorder) SendAllSessions(conn, data interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SendAllSessions", reflect.TypeOf((*MockMeasurementHandler)(nil).SendAllSessions), conn, data)
-}
-
-// SendMeasurementsToClient mocks base method.
-func (m *MockMeasurementHandler) SendMeasurementsToClient(ctx context.Context, conn net.Conn, command string) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "SendMeasurementsToClient", ctx, conn, command)
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// SendMeasurementsToClient indicates an expected call of SendMeasurementsToClient.
-func (mr *MockMeasurementHandlerMockRecorder) SendMeasurementsToClient(ctx, conn, command interface{}) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SendMeasurementsToClient", reflect.TypeOf((*MockMeasurementHandler)(nil).SendMeasurementsToClient), ctx, conn, command)
 }
 
 // SendSessionPackets mocks base method.

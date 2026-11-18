@@ -98,10 +98,6 @@ func (m MasterStatusMessage) Type() string           { return "MASTER_STATUS" }
 func (m SlaveStatusMessage) Type() string            { return "SLAVE_STATUS" }
 func (m SettingsAckMessage) Type() string            { return "SETTINGS_ACK" }
 
-type GetMessage struct {
-	What string
-}
-
 func ParseClientMessage(message string) (Message, error) {
 	if strings.HasPrefix(message, "SET_SETTINGS") {
 		par := models.Params{}
@@ -223,14 +219,6 @@ func ParseRemoveSessionMessage(message string) (int, error) {
 	}
 
 	return sessionID, nil
-}
-
-func ParseTime(timeStr string) (time.Time, error) {
-	parsedTime, err := time.Parse(models.TimeLayout, timeStr)
-	if err != nil {
-		return time.Time{}, fmt.Errorf("invalid time format: %w", err)
-	}
-	return parsedTime, nil
 }
 
 func ParseIncomingMeasurement(message string) (IncomingMeasurementMessage, error) {

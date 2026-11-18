@@ -103,6 +103,7 @@ mocks: ## Регенерация gomock-моков в mocks/
 		echo "mockgen не найден — установите: make tools"; exit 1; }
 	mockgen -source internal/core/interfaces.go -destination mocks/mock_core.go -package=core
 	mockgen -source internal/esp/interface.go -destination mocks/esp_mock.go -package=core
+	mockgen -source internal/service/service.go -destination mocks/mock_service.go -package=core
 
 tools: ## Установить dev-инструменты: golangci-lint, mockgen
 	$(GO) install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)

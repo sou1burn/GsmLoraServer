@@ -4,25 +4,6 @@ import "time"
 
 const TimeLayout = "2006-01-02 15:04:05.999999999 -0700 MST"
 
-type Destination int
-
-const (
-	Unknown Destination = iota
-	Lora
-	Client
-)
-
-func (d Destination) String() string {
-	switch d {
-	case Lora:
-		return "Lora"
-	case Client:
-		return "Client"
-	default:
-		return "Unknown"
-	}
-}
-
 type Coordinate struct {
 	Latitude  float64 `json:"latitude,string"`
 	Longitude float64 `json:"longitude,string"`

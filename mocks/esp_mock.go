@@ -48,34 +48,6 @@ func (mr *MockConnectorMockRecorder) GetConn() *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetConn", reflect.TypeOf((*MockConnector)(nil).GetConn))
 }
 
-// GetIP mocks base method.
-func (m *MockConnector) GetIP() string {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetIP")
-	ret0, _ := ret[0].(string)
-	return ret0
-}
-
-// GetIP indicates an expected call of GetIP.
-func (mr *MockConnectorMockRecorder) GetIP() *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetIP", reflect.TypeOf((*MockConnector)(nil).GetIP))
-}
-
-// GetPort mocks base method.
-func (m *MockConnector) GetPort() string {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetPort")
-	ret0, _ := ret[0].(string)
-	return ret0
-}
-
-// GetPort indicates an expected call of GetPort.
-func (mr *MockConnectorMockRecorder) GetPort() *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetPort", reflect.TypeOf((*MockConnector)(nil).GetPort))
-}
-
 // IsConnected mocks base method.
 func (m *MockConnector) IsConnected() bool {
 	m.ctrl.T.Helper()
@@ -126,40 +98,4 @@ func (m *MockConnector) SetConnected(connected bool) {
 func (mr *MockConnectorMockRecorder) SetConnected(connected interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetConnected", reflect.TypeOf((*MockConnector)(nil).SetConnected), connected)
-}
-
-// SetCurrentSession mocks base method.
-func (m *MockConnector) SetCurrentSession(session int) {
-	m.ctrl.T.Helper()
-	m.ctrl.Call(m, "SetCurrentSession", session)
-}
-
-// SetCurrentSession indicates an expected call of SetCurrentSession.
-func (mr *MockConnectorMockRecorder) SetCurrentSession(session interface{}) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetCurrentSession", reflect.TypeOf((*MockConnector)(nil).SetCurrentSession), session)
-}
-
-// SetIP mocks base method.
-func (m *MockConnector) SetIP(ip string) {
-	m.ctrl.T.Helper()
-	m.ctrl.Call(m, "SetIP", ip)
-}
-
-// SetIP indicates an expected call of SetIP.
-func (mr *MockConnectorMockRecorder) SetIP(ip interface{}) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetIP", reflect.TypeOf((*MockConnector)(nil).SetIP), ip)
-}
-
-// SetPort mocks base method.
-func (m *MockConnector) SetPort(port string) {
-	m.ctrl.T.Helper()
-	m.ctrl.Call(m, "SetPort", port)
-}
-
-// SetPort indicates an expected call of SetPort.
-func (mr *MockConnectorMockRecorder) SetPort(port interface{}) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetPort", reflect.TypeOf((*MockConnector)(nil).SetPort), port)
 }

@@ -110,7 +110,7 @@ func (s *Server) HandleConnection(conn net.Conn) error {
 			} else {
 				s.addWaitingClient(conn)
 				log.Printf("Client %s waiting for esp connection", conn.RemoteAddr())
-				s.measurementHandler.AddPendingMessage(message, models.Lora, handlers.SetSettingsMessage{})
+				s.measurementHandler.AddPendingMessage(message, handlers.SetSettingsMessage{})
 				go s.waitForEspConnectionLogged(conn)
 			}
 
@@ -122,7 +122,7 @@ func (s *Server) HandleConnection(conn net.Conn) error {
 			} else {
 				s.addWaitingClient(conn)
 				log.Printf("Client %s waiting for esp connection", conn.RemoteAddr())
-				s.measurementHandler.AddPendingMessage(message, models.Lora, handlers.StartMeasurementMessage{})
+				s.measurementHandler.AddPendingMessage(message, handlers.StartMeasurementMessage{})
 				go s.waitForEspConnectionLogged(conn)
 			}
 
@@ -338,7 +338,6 @@ func (s *Server) HandleRemoveSession(ctx context.Context, conn net.Conn, session
 }
 
 func (s *Server) HandleEspConnection(conn net.Conn) {
-	s.connector.SetIP(conn.RemoteAddr().String())
 	s.connector.SetConn(conn)
 	s.connector.SetConnected(true)
 	log.Printf("Connection from esp: %v", conn.RemoteAddr().String())

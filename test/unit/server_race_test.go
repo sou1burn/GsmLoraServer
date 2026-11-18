@@ -97,12 +97,6 @@ func (r *fakeRepo) GetAllSessions(context.Context) ([]models.Session, error) {
 
 func (r *fakeRepo) FindBySession(context.Context, int) ([]models.Packet, error) { return nil, nil }
 
-func (r *fakeRepo) FindLastSessionId(context.Context) (int, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.lastSessionId(), nil
-}
-
 func (r *fakeRepo) AddSettingsToSession(_ context.Context, sessionId int, sf, tx, bw float32) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
