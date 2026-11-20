@@ -27,11 +27,14 @@ LDFLAGS := -s -w -X main.version=$(VERSION) -X main.buildTime=$(BUILD_TIME)
 GO ?= go
 GOLANGCI_LINT_VERSION ?= v2.15.0   # менять синхронно с CI-пайплайном
 MOCKGEN_VERSION ?= v1.6.0          # должен совпадать с gomock из go.mod
+BUF_VERSION ?= v1.75.0             # менять синхронно с CI-пайплайном
+PROTOC_GEN_GO_VERSION ?= v1.36.12  # синхронно с google.golang.org/protobuf из go.mod
 DOCKER_COMPOSE ?= docker compose   # или docker-compose, если плагина нет
 
 .DEFAULT_GOAL := help
 .PHONY: help build build-cross run test test-race race lint lint-fix fmt vet \
-        tidy mocks tools envs up down logs ps docker-build clean ci
+        tidy mocks tools envs up down logs ps docker-build clean ci \
+        proto proto-lint proto-breaking
 
 # ---------------------------------------------------------------- Разработка
 
@@ -105,9 +108,20 @@ mocks: ## Регенерация gomock-моков в mocks/
 	mockgen -source internal/esp/interface.go -destination mocks/esp_mock.go -package=core
 	mockgen -source internal/service/service.go -destination mocks/mock_service.go -package=core
 
-tools: ## Установить dev-инструменты: golangci-lint, mockgen
+proto: ## Сгенерировать Go-код из api/proto (buf generate)
+	buf generate
+
+proto-lint: ## Линт proto-схем (buf lint)
+	buf lint
+
+proto-breaking: ## Ломающие изменения схемы относительно origin/main (buf breaking)
+	buf breaking --against '.git#branch=origin/main'
+
+tools: ## Установить dev-инструменты: golangci-lint, mockgen, buf, protoc-gen-go
 	$(GO) install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
 	$(GO) install github.com/golang/mock/mockgen@$(MOCKGEN_VERSION)
+	$(GO) install github.com/bufbuild/buf/cmd/buf@$(BUF_VERSION)
+	$(GO) install google.golang.org/protobuf/cmd/protoc-gen-go@$(PROTOC_GEN_GO_VERSION)
 	@echo "Проверьте, что $$($(GO) env GOPATH)/bin есть в PATH"
 
 # ---------------------------------------------------------------- Стенд (Docker)

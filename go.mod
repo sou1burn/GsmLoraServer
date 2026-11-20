@@ -7,6 +7,7 @@ require (
 	github.com/jackc/pgx/v5 v5.7.6
 	github.com/joho/godotenv v1.5.1
 	github.com/pressly/goose/v3 v3.26.0
+	google.golang.org/protobuf v1.36.12
 )
 
 require (

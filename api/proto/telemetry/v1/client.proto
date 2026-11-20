@@ -1,0 +1,65 @@
+syntax = "proto3";
+
+package telemetry.v1;
+
+import "telemetry/v1/types.proto";
+
+option go_package = "github.com/sou1burn/GsmLoraServer/api/proto/telemetry/v1;telemetryv1";
+
+// Конверт команд клиент → сервер.
+message ClientCommand {
+  oneof payload {
+    SetSettings set_settings = 1;
+    StartMeasurement start_measurement = 2;
+    GetMeasurementSessions get_measurement_sessions = 3;
+    AddSession add_session = 4;
+    RemoveSession remove_session = 5;
+  }
+}
+
+// Настройки LoRa-интерфейса; рендер в текст на ESP остаётся в ingestion.
+message SetSettings {
+  LoRaParams params = 1;
+}
+
+// 0 = «последняя сессия»
+message StartMeasurement {
+  int32 session_id = 1;
+}
+
+message GetMeasurementSessions {}
+
+message AddSession {
+  Session session = 1;
+}
+
+message RemoveSession {
+  int32 session_id = 1;
+}
+
+// Конверт сервер → клиент: ответы и броадкасты.
+message ServerToClient {
+  oneof payload {
+    SessionList session_list = 1;
+    MeasurementBroadcast measurement_broadcast = 2;
+    CommandError command_error = 3;
+    DeviceStatusChanged device_status_changed = 4;
+    SettingsConfirmed settings_confirmed = 5;
+  }
+}
+
+// Ответ на GetMeasurementSessions.
+message SessionList {
+  repeated Session sessions = 1;
+}
+
+// Усреднённый пакет (packet_num = 0) либо исторический пакет сессии.
+message MeasurementBroadcast {
+  Packet packet = 1;
+}
+
+// ERROR / ALREADY_SET. Корреляция — по соединению (сегодня) и по
+// gRPC-вызову (после распила)
+message CommandError {
+  string message = 1;
+}
