@@ -60,10 +60,6 @@ linters:
     paths:
       - mocks
     rules:
-      - path: internal[/\\]utils[/\\]
-        linters:
-          - gosec
-          - unparam
       - path: _test\.go
         linters:
           - gosec

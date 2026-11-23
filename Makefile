@@ -7,7 +7,7 @@
 #            дописываются в переменную BINARIES ниже — остальные цели
 #            не меняются.
 #
-# Окружение: Linux / WSL / Git Bash (нужны make, Go >= 1.25, docker compose).
+# Окружение: Linux / WSL / Git Bash (нужны make, Go >= 1.26, docker compose).
 # ============================================================================
 
 BINARY_NAME ?= gsmloraserver
@@ -29,6 +29,7 @@ GOLANGCI_LINT_VERSION ?= v2.15.0   # менять синхронно с CI-па�
 MOCKGEN_VERSION ?= v1.6.0          # должен совпадать с gomock из go.mod
 BUF_VERSION ?= v1.75.0             # менять синхронно с CI-пайплайном
 PROTOC_GEN_GO_VERSION ?= v1.36.12  # синхронно с google.golang.org/protobuf из go.mod
+PROTOC_GEN_GO_GRPC_VERSION ?= v1.6.2  # синхронно с google.golang.org/grpc из go.mod
 DOCKER_COMPOSE ?= docker compose   # или docker-compose, если плагина нет
 
 .DEFAULT_GOAL := help
@@ -117,11 +118,12 @@ proto-lint: ## Линт proto-схем (buf lint)
 proto-breaking: ## Ломающие изменения схемы относительно origin/main (buf breaking)
 	buf breaking --against '.git#branch=origin/main'
 
-tools: ## Установить dev-инструменты: golangci-lint, mockgen, buf, protoc-gen-go
+tools: ## Установить dev-инструменты: golangci-lint, mockgen, buf, protoc-gen-go(+grpc)
 	$(GO) install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
 	$(GO) install github.com/golang/mock/mockgen@$(MOCKGEN_VERSION)
 	$(GO) install github.com/bufbuild/buf/cmd/buf@$(BUF_VERSION)
 	$(GO) install google.golang.org/protobuf/cmd/protoc-gen-go@$(PROTOC_GEN_GO_VERSION)
+	$(GO) install google.golang.org/grpc/cmd/protoc-gen-go-grpc@$(PROTOC_GEN_GO_GRPC_VERSION)
 	@echo "Проверьте, что $$($(GO) env GOPATH)/bin есть в PATH"
 
 # ---------------------------------------------------------------- Стенд (Docker)
@@ -142,8 +144,7 @@ logs: ## Логи приложения (docker compose logs -f app)
 ps: ## Статус контейнеров стенда
 	$(DOCKER_COMPOSE) ps
 
-docker-build: ## Собрать образ приложения с версией из git
-	@test -f db.env || $(MAKE) envs
+docker-build:
 	docker build --build-arg VERSION=$(VERSION) --build-arg BUILD_TIME=$(BUILD_TIME) \
 		-t $(BINARY_NAME):$(VERSION) .
 
