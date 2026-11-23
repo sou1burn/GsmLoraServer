@@ -20,6 +20,17 @@ import (
 
 const statusTimeout = 120 * time.Second
 
+type lockedConn struct {
+	net.Conn
+	mu sync.Mutex
+}
+
+func (c *lockedConn) Write(b []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.Conn.Write(b)
+}
+
 type DeviceStatus struct {
 	LastUpdated time.Time
 	Status      string
@@ -75,6 +86,7 @@ func (s *Server) Serve(ln net.Listener) error {
 }
 
 func (s *Server) HandleConnection(conn net.Conn) error {
+	conn = &lockedConn{Conn: conn}
 	log.Printf("Client connected from %s", conn.RemoteAddr())
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

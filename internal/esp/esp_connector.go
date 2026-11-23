@@ -78,8 +78,8 @@ func (e *ESPConnector) SendCommand(command string, sessionId int) error {
 }
 
 func (e *ESPConnector) SendParamsToDevice(params models.Params) error {
-	e.mutex.RLock()
-	defer e.mutex.RUnlock()
+	e.mutex.Lock()
+	defer e.mutex.Unlock()
 
 	if !e.isConnected || e.Conn == nil {
 		log.Printf("not Connected to ESP32")
