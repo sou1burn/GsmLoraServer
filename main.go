@@ -22,18 +22,21 @@ var (
 
 func main() {
 	log.Printf("Lora ESP GSM GPS Project v.%s (built %s)\n", version, buildTime)
-	logFile, err := os.OpenFile("app.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
-	if err != nil {
-		log.Printf("Не удалось открыть файл для логов: %v", err)
-	} else {
-		multiWriter := io.MultiWriter(os.Stdout, logFile)
-		log.SetOutput(multiWriter)
-		defer func(logFile *os.File) {
-			err := logFile.Close()
-			if err != nil {
-				log.Printf("Error closing log file: %v", err)
-			}
-		}(logFile)
+
+	if _, dockerEnvErr := os.Stat("/.dockerenv"); dockerEnvErr != nil {
+		logFile, err := os.OpenFile("app.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+		if err != nil {
+			log.Printf("Не удалось открыть файл для логов: %v", err)
+		} else {
+			multiWriter := io.MultiWriter(os.Stdout, logFile)
+			log.SetOutput(multiWriter)
+			defer func(logFile *os.File) {
+				err := logFile.Close()
+				if err != nil {
+					log.Printf("Error closing log file: %v", err)
+				}
+			}(logFile)
+		}
 	}
 
 	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
@@ -46,7 +49,7 @@ func main() {
 	appInstance.EspConnector = espConnector
 	appInstance.InitService(espConnector)
 
-	err = appInstance.InitDB(dbCfg)
+	err := appInstance.InitDB(dbCfg)
 	if err != nil {
 		log.Println("Error connecting to database:", err)
 		return
@@ -71,8 +74,7 @@ func main() {
 
 	<-ctx.Done()
 	srv.Shutdown()
-	err = appInstance.DataService.DrainDataChannel()
-	if err != nil {
+	if err := appInstance.DataService.DrainDataChannel(); err != nil {
 		log.Printf("Error draining data chan: %v", err)
 	}
 }

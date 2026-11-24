@@ -40,8 +40,6 @@ type Server struct {
 	mutex                sync.Mutex
 	measurementHandler   core.MeasurementHandler
 	connector            esp.Connector
-	waitList             []net.Conn
-	waitListMutex        sync.RWMutex
 	SlaveState           DeviceStatus
 	MasterState          DeviceStatus
 	isMeasurementStarted atomic.Bool
@@ -130,10 +128,8 @@ func (s *Server) HandleConnection(ctx context.Context, conn net.Conn) error {
 			if s.connector.IsConnected() {
 				s.HandleSetSettings(conn, message)
 			} else {
-				s.addWaitingClient(conn)
 				log.Printf("Client %s waiting for esp connection", conn.RemoteAddr())
 				s.measurementHandler.AddPendingMessage(message, handlers.SetSettingsMessage{})
-				go s.waitForEspConnectionLogged(conn)
 			}
 
 		case handlers.StartMeasurementMessage:
@@ -142,10 +138,8 @@ func (s *Server) HandleConnection(ctx context.Context, conn net.Conn) error {
 			if s.connector.IsConnected() {
 				s.handleStartMeasurement(connCtx, conn, msg.SessionId)
 			} else {
-				s.addWaitingClient(conn)
 				log.Printf("Client %s waiting for esp connection", conn.RemoteAddr())
 				s.measurementHandler.AddPendingMessage(message, handlers.StartMeasurementMessage{})
-				go s.waitForEspConnectionLogged(conn)
 			}
 
 		case handlers.GetMeasurementSessionsMessage: //esp not used here
@@ -233,58 +227,6 @@ func (s *Server) replyError(conn net.Conn, err error) {
 		return
 	}
 	s.write(conn, "ERROR: "+err.Error())
-}
-
-func (s *Server) waitForEspConnectionLogged(conn net.Conn) {
-	if err := s.waitForEspConnection(conn); err != nil {
-		log.Printf("Error waiting for esp connection: %v", err)
-	}
-}
-
-func (s *Server) waitForEspConnection(conn net.Conn) error {
-	timeout := time.After(30 * time.Second)
-	log.Printf("Waiting for esp connection to establish")
-	ticker := time.NewTicker(1 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-timeout:
-			s.removeWaitingClient(conn)
-			log.Printf("Client %s not waiting for esp connection to establish, timeout", conn.RemoteAddr())
-			return errors.New("ESP connection timeout")
-		case <-ticker.C:
-			if s.connector.IsConnected() {
-				s.removeWaitingClient(conn)
-				s.notifyWaitingClients()
-				return nil
-			}
-		}
-	}
-}
-
-func (s *Server) addWaitingClient(conn net.Conn) {
-	s.waitListMutex.Lock()
-	s.waitList = append(s.waitList, conn)
-	log.Printf("Adding waiting client: %s", conn.RemoteAddr())
-	s.waitListMutex.Unlock()
-}
-
-func (s *Server) removeWaitingClient(conn net.Conn) {
-	s.waitListMutex.Lock()
-	defer s.waitListMutex.Unlock()
-	for i, connection := range s.waitList {
-		if connection == conn {
-			s.waitList = append(s.waitList[:i], s.waitList[i+1:]...)
-			break
-		}
-	}
-}
-
-func (s *Server) notifyWaitingClients() {
-	s.waitListMutex.Lock()
-	defer s.waitListMutex.Unlock()
-	s.waitList = nil
 }
 
 func (s *Server) HandleSetSettings(conn net.Conn, message string) {
