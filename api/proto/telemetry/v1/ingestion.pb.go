@@ -28,7 +28,6 @@ const (
 	// Команда принята и отправлена на ESP (или уже применена).
 	ExecuteStatus_EXECUTE_STATUS_ACCEPTED ExecuteStatus = 1
 	// ESP offline: команда положена в pending и уйдёт при подключении
-	// (сегодня — PendingMessages в internal/service/service.go).
 	ExecuteStatus_EXECUTE_STATUS_PENDING_ESP_OFFLINE ExecuteStatus = 2
 	// Отказ: невалидные параметры, «настройки уже заданы» (ALREADY_SET) и т.п.
 	ExecuteStatus_EXECUTE_STATUS_REJECTED ExecuteStatus = 3
@@ -247,7 +246,7 @@ func (x *GetSessionsResponse) GetSessionList() *SessionList {
 
 type AddSessionRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Session       *Session               `protobuf:"bytes,1,opt,name=session,proto3" json:"session,omitempty"`
+	AddSession    *AddSession            `protobuf:"bytes,1,opt,name=add_session,json=addSession,proto3" json:"add_session,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -282,9 +281,9 @@ func (*AddSessionRequest) Descriptor() ([]byte, []int) {
 	return file_telemetry_v1_ingestion_proto_rawDescGZIP(), []int{4}
 }
 
-func (x *AddSessionRequest) GetSession() *Session {
+func (x *AddSessionRequest) GetAddSession() *AddSession {
 	if x != nil {
-		return x.Session
+		return x.AddSession
 	}
 	return nil
 }
@@ -327,7 +326,7 @@ func (*AddSessionResponse) Descriptor() ([]byte, []int) {
 
 type RemoveSessionRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	SessionId     int32                  `protobuf:"varint,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	SessionId     int64                  `protobuf:"varint,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -362,7 +361,7 @@ func (*RemoveSessionRequest) Descriptor() ([]byte, []int) {
 	return file_telemetry_v1_ingestion_proto_rawDescGZIP(), []int{6}
 }
 
-func (x *RemoveSessionRequest) GetSessionId() int32 {
+func (x *RemoveSessionRequest) GetSessionId() int64 {
 	if x != nil {
 		return x.SessionId
 	}
@@ -408,7 +407,7 @@ func (*RemoveSessionResponse) Descriptor() ([]byte, []int) {
 type GetPacketsRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// 0 — «последняя сессия».
-	SessionId     int32 `protobuf:"varint,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	SessionId     int64 `protobuf:"varint,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -443,7 +442,7 @@ func (*GetPacketsRequest) Descriptor() ([]byte, []int) {
 	return file_telemetry_v1_ingestion_proto_rawDescGZIP(), []int{8}
 }
 
-func (x *GetPacketsRequest) GetSessionId() int32 {
+func (x *GetPacketsRequest) GetSessionId() int64 {
 	if x != nil {
 		return x.SessionId
 	}
@@ -585,17 +584,18 @@ const file_telemetry_v1_ingestion_proto_rawDesc = "" +
 	"\x06status\x18\x01 \x01(\x0e2\x1b.telemetry.v1.ExecuteStatusR\x06status\"\x14\n" +
 	"\x12GetSessionsRequest\"S\n" +
 	"\x13GetSessionsResponse\x12<\n" +
-	"\fsession_list\x18\x01 \x01(\v2\x19.telemetry.v1.SessionListR\vsessionList\"D\n" +
-	"\x11AddSessionRequest\x12/\n" +
-	"\asession\x18\x01 \x01(\v2\x15.telemetry.v1.SessionR\asession\"\x1a\n" +
+	"\fsession_list\x18\x01 \x01(\v2\x19.telemetry.v1.SessionListR\vsessionList\"N\n" +
+	"\x11AddSessionRequest\x129\n" +
+	"\vadd_session\x18\x01 \x01(\v2\x18.telemetry.v1.AddSessionR\n" +
+	"addSession\"\x1a\n" +
 	"\x12AddSessionResponseJ\x04\b\x01\x10\x02\"5\n" +
 	"\x14RemoveSessionRequest\x12\x1d\n" +
 	"\n" +
-	"session_id\x18\x01 \x01(\x05R\tsessionId\"\x17\n" +
+	"session_id\x18\x01 \x01(\x03R\tsessionId\"\x17\n" +
 	"\x15RemoveSessionResponse\"2\n" +
 	"\x11GetPacketsRequest\x12\x1d\n" +
 	"\n" +
-	"session_id\x18\x01 \x01(\x05R\tsessionId\"B\n" +
+	"session_id\x18\x01 \x01(\x03R\tsessionId\"B\n" +
 	"\x12GetPacketsResponse\x12,\n" +
 	"\x06packet\x18\x01 \x01(\v2\x14.telemetry.v1.PacketR\x06packet\"\x18\n" +
 	"\x16SubscribeEventsRequest\"M\n" +
@@ -646,7 +646,7 @@ var file_telemetry_v1_ingestion_proto_goTypes = []any{
 	(*SubscribeEventsResponse)(nil), // 12: telemetry.v1.SubscribeEventsResponse
 	(*ClientCommand)(nil),           // 13: telemetry.v1.ClientCommand
 	(*SessionList)(nil),             // 14: telemetry.v1.SessionList
-	(*Session)(nil),                 // 15: telemetry.v1.Session
+	(*AddSession)(nil),              // 15: telemetry.v1.AddSession
 	(*Packet)(nil),                  // 16: telemetry.v1.Packet
 	(*ServerToClient)(nil),          // 17: telemetry.v1.ServerToClient
 }
@@ -654,7 +654,7 @@ var file_telemetry_v1_ingestion_proto_depIdxs = []int32{
 	13, // 0: telemetry.v1.ExecuteCommandRequest.command:type_name -> telemetry.v1.ClientCommand
 	0,  // 1: telemetry.v1.ExecuteCommandResponse.status:type_name -> telemetry.v1.ExecuteStatus
 	14, // 2: telemetry.v1.GetSessionsResponse.session_list:type_name -> telemetry.v1.SessionList
-	15, // 3: telemetry.v1.AddSessionRequest.session:type_name -> telemetry.v1.Session
+	15, // 3: telemetry.v1.AddSessionRequest.add_session:type_name -> telemetry.v1.AddSession
 	16, // 4: telemetry.v1.GetPacketsResponse.packet:type_name -> telemetry.v1.Packet
 	17, // 5: telemetry.v1.SubscribeEventsResponse.event:type_name -> telemetry.v1.ServerToClient
 	1,  // 6: telemetry.v1.IngestionService.ExecuteCommand:input_type -> telemetry.v1.ExecuteCommandRequest

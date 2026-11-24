@@ -6,7 +6,6 @@ import "telemetry/v1/types.proto";
 
 option go_package = "github.com/sou1burn/GsmLoraServer/api/proto/telemetry/v1;telemetryv1";
 
-// Конверт событий ESP → сервер.
 message DeviceEvent {
   oneof payload {
     DeviceIdentified device_identified = 1;
@@ -18,19 +17,14 @@ message DeviceEvent {
   }
 }
 
-// IDENTIFY: соединение зарегистрировано как ESP.
 message DeviceIdentified {}
 
-// MEASUREMENT — горячий путь. Дроп при незапущенном измерении остаётся
-// на крае (ingestion).
 message MeasurementReceived {
   Packet packet = 1;
 }
 
-// ACK: keepalive мастера.
 message DeviceAlive {}
 
-// ERROR с устройства (сегодня — сырая строка без структуры).
 message DeviceError {
   string message = 1;
 }

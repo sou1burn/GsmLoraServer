@@ -2,9 +2,20 @@ syntax = "proto3";
 
 package telemetry.v1;
 
+import "google/protobuf/timestamp.proto";
 import "telemetry/v1/types.proto";
 
 option go_package = "github.com/sou1burn/GsmLoraServer/api/proto/telemetry/v1;telemetryv1";
+
+// Ребро «клиентское приложение ↔ сервер». Wire-цель: protobuf + framing,
+// переходный период — двуязычный приём (матрица решений в плане эволюции).
+//
+// Framing двоичного режима:
+//   кадр = 0x01 | uint32 big-endian (длина N) | N байт сериализованного
+//          ClientCommand (клиент → сервер) или ServerToClient (сервер → клиент)
+//   - маркер 0x01 непечатаем, а строки текстового протокола начинаются
+//     с ASCII 0x20..0x7E — кадр и текст различимы побайтово;
+//   - лимит N = 1 МБ: всё сверх — протокольная ошибка, соединение закрывается.
 
 // Конверт команд клиент → сервер.
 message ClientCommand {
@@ -24,17 +35,20 @@ message SetSettings {
 
 // 0 = «последняя сессия»
 message StartMeasurement {
-  int32 session_id = 1;
+  int64 session_id = 1;
 }
 
 message GetMeasurementSessions {}
 
 message AddSession {
-  Session session = 1;
+  int64 id = 1;
+  string name = 2;
+  google.protobuf.Timestamp start_time = 3;
+  google.protobuf.Timestamp end_time = 4;
 }
 
 message RemoveSession {
-  int32 session_id = 1;
+  int64 session_id = 1;
 }
 
 // Конверт сервер → клиент: ответы и броадкасты.

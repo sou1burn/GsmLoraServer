@@ -7,8 +7,9 @@ import "google/protobuf/timestamp.proto";
 option go_package = "github.com/sou1burn/GsmLoraServer/api/proto/telemetry/v1;telemetryv1";
 
 message Packet {
-  // Идентификатор измерения, >= 1.
-  int32 measurement_id = 1;
+  // Идентификатор измерения, >= 1. int64 — синхронно с BIGINT в БД и int в Go;
+  // после первого потребителя тип поля менять нельзя (только новое поле).
+  int64 measurement_id = 1;
   // Номер пакета в измерении: 1..10; 0 — усреднённый
   int32 packet_num = 2;
   double rssi = 3;
@@ -29,8 +30,18 @@ message LoRaParams {
   float bw = 3;
 }
 
+// Сессия измерения — выходной тип (SessionList). Для входа команды ADD_SESSION
+// есть отдельный узкий тип AddSession в client.proto: у count и params другие
+// хозяева (триггер БД и сервер), клиент их задавать не должен.
+//
+// Политика времени (ACL на входе):
+//   - клиент сегодня шлёт строки RFC3339 и «2006-01-02 15:04:05» — ACL парсит
+//     оба формата;
+//   - непарсируемое время сессии = CommandError, сессия не создаётся
+//     (фолбэка нет — в отличие от пакетов, у которых время приёма);
+//   - в БД пишется UTC (колонки TIMESTAMP WITHOUT TIME ZONE).
 message Session {
-  int32 id = 1;
+  int64 id = 1;
   string name = 2;
   google.protobuf.Timestamp start_time = 3;
   google.protobuf.Timestamp end_time = 4;

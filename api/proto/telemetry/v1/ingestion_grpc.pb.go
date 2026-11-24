@@ -32,25 +32,21 @@ const (
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 //
 // Сервис приёма телеметрии. Реализация — cmd/ingestion (этап 1),
-// единственный клиент — cmd/api. Контракт описан в doc/microservices_split.md.
+// единственный клиент — cmd/api.
 //
-// Именование строго по buf STANDARD: суффикс Service у сервиса,
-// FooRequest/FooResponse у всех RPC. Конверты ClientCommand/ServerToClient —
-// канонические типы домена, RPC-обёртки — транспортный слой вокруг них.
+// Конверты ClientCommand/ServerToClient — канонические типы домена,
+// RPC-обёртки — транспортный слой вокруг них.
 type IngestionServiceClient interface {
-	// Зонтичная команда: SetSettings / StartMeasurement приезжают внутри
+	// SetSettings / StartMeasurement приезжают внутри
 	// конверта ClientCommand (ребро клиент-TCP остаётся текстовым).
 	ExecuteCommand(ctx context.Context, in *ExecuteCommandRequest, opts ...grpc.CallOption) (*ExecuteCommandResponse, error)
 	// Чтения и CRUD сессий. Владелец БД на этапе 1 — ingestion.
-	// GetSessionsRequest — пустая заготовка под будущую пагинацию.
 	GetSessions(ctx context.Context, in *GetSessionsRequest, opts ...grpc.CallOption) (*GetSessionsResponse, error)
 	AddSession(ctx context.Context, in *AddSessionRequest, opts ...grpc.CallOption) (*AddSessionResponse, error)
 	RemoveSession(ctx context.Context, in *RemoveSessionRequest, opts ...grpc.CallOption) (*RemoveSessionResponse, error)
-	// История сессии (сегодня — goroutine в handleStartMeasurement,
-	// cmd/server/server.go). session_id = 0 — «последняя сессия».
+	// История сессии. session_id = 0 — «последняя сессия».
 	GetPackets(ctx context.Context, in *GetPacketsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[GetPacketsResponse], error)
-	// Поток событий к api: MeasurementBroadcast, DeviceStatusChanged,
-	// SettingsConfirmed, CommandError. На этапе 2 замещается Kafka-топиками.
+	// Поток событий к api: MeasurementBroadcast, DeviceStatusChanged, SettingsConfirmed, CommandError.
 	SubscribeEvents(ctx context.Context, in *SubscribeEventsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[SubscribeEventsResponse], error)
 }
 
@@ -145,25 +141,21 @@ type IngestionService_SubscribeEventsClient = grpc.ServerStreamingClient[Subscri
 // for forward compatibility.
 //
 // Сервис приёма телеметрии. Реализация — cmd/ingestion (этап 1),
-// единственный клиент — cmd/api. Контракт описан в doc/microservices_split.md.
+// единственный клиент — cmd/api.
 //
-// Именование строго по buf STANDARD: суффикс Service у сервиса,
-// FooRequest/FooResponse у всех RPC. Конверты ClientCommand/ServerToClient —
-// канонические типы домена, RPC-обёртки — транспортный слой вокруг них.
+// Конверты ClientCommand/ServerToClient — канонические типы домена,
+// RPC-обёртки — транспортный слой вокруг них.
 type IngestionServiceServer interface {
-	// Зонтичная команда: SetSettings / StartMeasurement приезжают внутри
+	// SetSettings / StartMeasurement приезжают внутри
 	// конверта ClientCommand (ребро клиент-TCP остаётся текстовым).
 	ExecuteCommand(context.Context, *ExecuteCommandRequest) (*ExecuteCommandResponse, error)
 	// Чтения и CRUD сессий. Владелец БД на этапе 1 — ingestion.
-	// GetSessionsRequest — пустая заготовка под будущую пагинацию.
 	GetSessions(context.Context, *GetSessionsRequest) (*GetSessionsResponse, error)
 	AddSession(context.Context, *AddSessionRequest) (*AddSessionResponse, error)
 	RemoveSession(context.Context, *RemoveSessionRequest) (*RemoveSessionResponse, error)
-	// История сессии (сегодня — goroutine в handleStartMeasurement,
-	// cmd/server/server.go). session_id = 0 — «последняя сессия».
+	// История сессии. session_id = 0 — «последняя сессия».
 	GetPackets(*GetPacketsRequest, grpc.ServerStreamingServer[GetPacketsResponse]) error
-	// Поток событий к api: MeasurementBroadcast, DeviceStatusChanged,
-	// SettingsConfirmed, CommandError. На этапе 2 замещается Kafka-топиками.
+	// Поток событий к api: MeasurementBroadcast, DeviceStatusChanged, SettingsConfirmed, CommandError.
 	SubscribeEvents(*SubscribeEventsRequest, grpc.ServerStreamingServer[SubscribeEventsResponse]) error
 	mustEmbedUnimplementedIngestionServiceServer()
 }

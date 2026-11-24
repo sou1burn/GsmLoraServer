@@ -8,28 +8,24 @@ import "telemetry/v1/types.proto";
 option go_package = "github.com/sou1burn/GsmLoraServer/api/proto/telemetry/v1;telemetryv1";
 
 // Сервис приёма телеметрии. Реализация — cmd/ingestion (этап 1),
-// единственный клиент — cmd/api. Контракт описан в doc/microservices_split.md.
+// единственный клиент — cmd/api.
 //
-// Именование строго по buf STANDARD: суффикс Service у сервиса,
-// FooRequest/FooResponse у всех RPC. Конверты ClientCommand/ServerToClient —
-// канонические типы домена, RPC-обёртки — транспортный слой вокруг них.
+// Конверты ClientCommand/ServerToClient — канонические типы домена,
+// RPC-обёртки — транспортный слой вокруг них.
 service IngestionService {
-  // Зонтичная команда: SetSettings / StartMeasurement приезжают внутри
+  // SetSettings / StartMeasurement приезжают внутри
   // конверта ClientCommand (ребро клиент-TCP остаётся текстовым).
   rpc ExecuteCommand(ExecuteCommandRequest) returns (ExecuteCommandResponse);
 
   // Чтения и CRUD сессий. Владелец БД на этапе 1 — ingestion.
-  // GetSessionsRequest — пустая заготовка под будущую пагинацию.
   rpc GetSessions(GetSessionsRequest) returns (GetSessionsResponse);
   rpc AddSession(AddSessionRequest) returns (AddSessionResponse);
   rpc RemoveSession(RemoveSessionRequest) returns (RemoveSessionResponse);
 
-  // История сессии (сегодня — goroutine в handleStartMeasurement,
-  // cmd/server/server.go). session_id = 0 — «последняя сессия».
+  // История сессии. session_id = 0 — «последняя сессия».
   rpc GetPackets(GetPacketsRequest) returns (stream GetPacketsResponse);
 
-  // Поток событий к api: MeasurementBroadcast, DeviceStatusChanged,
-  // SettingsConfirmed, CommandError. На этапе 2 замещается Kafka-топиками.
+  // Поток событий к api: MeasurementBroadcast, DeviceStatusChanged, SettingsConfirmed, CommandError.
   rpc SubscribeEvents(SubscribeEventsRequest) returns (stream SubscribeEventsResponse);
 }
 
@@ -48,7 +44,6 @@ enum ExecuteStatus {
   // Команда принята и отправлена на ESP (или уже применена).
   EXECUTE_STATUS_ACCEPTED = 1;
   // ESP offline: команда положена в pending и уйдёт при подключении
-  // (сегодня — PendingMessages в internal/service/service.go).
   EXECUTE_STATUS_PENDING_ESP_OFFLINE = 2;
   // Отказ: невалидные параметры, «настройки уже заданы» (ALREADY_SET) и т.п.
   EXECUTE_STATUS_REJECTED = 3;
@@ -63,7 +58,7 @@ message GetSessionsResponse {
 }
 
 message AddSessionRequest {
-  Session session = 1;
+  AddSession add_session = 1;
 }
 
 message AddSessionResponse {
@@ -71,7 +66,7 @@ message AddSessionResponse {
 }
 
 message RemoveSessionRequest {
-  int32 session_id = 1;
+  int64 session_id = 1;
 }
 
 message RemoveSessionResponse {}
@@ -80,7 +75,7 @@ message RemoveSessionResponse {}
 
 message GetPacketsRequest {
   // 0 — «последняя сессия».
-  int32 session_id = 1;
+  int64 session_id = 1;
 }
 
 message GetPacketsResponse {
