@@ -46,6 +46,9 @@ type Server struct {
 	MasterState          DeviceStatus
 	isMeasurementStarted atomic.Bool
 	monitorOnce          sync.Once
+	conns                sync.WaitGroup
+	connMu               sync.Mutex
+	tracked              map[net.Conn]struct{}
 }
 
 func NewServer(h core.MeasurementHandler, connector esp.Connector) *Server {
@@ -54,20 +57,25 @@ func NewServer(h core.MeasurementHandler, connector esp.Connector) *Server {
 		connector:          connector,
 		SlaveState:         DeviceStatus{},
 		MasterState:        DeviceStatus{},
+		tracked:            make(map[net.Conn]struct{}),
 	}
 }
 
-func (s *Server) StartServer(port string) error {
+func (s *Server) StartServer(ctx context.Context, port string) error {
 	ln, err := net.Listen("tcp", ":"+port)
 	if err != nil {
 		return fmt.Errorf("listen on port %s: %w", port, err)
 	}
-	return s.Serve(ln)
+	return s.Serve(ctx, ln)
 }
 
-func (s *Server) Serve(ln net.Listener) error {
+func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	defer ln.Close()
 	log.Printf("Server started listening on %v", ln.Addr())
+	go func() {
+		<-ctx.Done()
+		ln.Close()
+	}()
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -77,18 +85,18 @@ func (s *Server) Serve(ln net.Listener) error {
 			log.Printf("error accepting connection: %v", err)
 			continue
 		}
-		go func() {
-			if err := s.HandleConnection(conn); err != nil {
+		s.conns.Go(func() {
+			if err := s.HandleConnection(ctx, conn); err != nil {
 				log.Printf("Error handling connection: %v", err)
 			}
-		}()
+		})
 	}
 }
 
-func (s *Server) HandleConnection(conn net.Conn) error {
+func (s *Server) HandleConnection(ctx context.Context, conn net.Conn) error {
 	conn = &lockedConn{Conn: conn}
 	log.Printf("Client connected from %s", conn.RemoteAddr())
-	ctx, cancel := context.WithCancel(context.Background())
+	connCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	defer func() {
 		s.measurementHandler.RemoveClient(conn)
@@ -99,6 +107,8 @@ func (s *Server) HandleConnection(conn net.Conn) error {
 		}
 		_ = conn.Close()
 	}()
+	s.trackConn(conn)
+	defer s.untrackConn(conn)
 	scanner := bufio.NewScanner(conn)
 
 	for scanner.Scan() {
@@ -130,7 +140,7 @@ func (s *Server) HandleConnection(conn net.Conn) error {
 			s.isMeasurementStarted.Store(true)
 			s.measurementHandler.AddClient(conn)
 			if s.connector.IsConnected() {
-				s.handleStartMeasurement(ctx, conn, msg.SessionId)
+				s.handleStartMeasurement(connCtx, conn, msg.SessionId)
 			} else {
 				s.addWaitingClient(conn)
 				log.Printf("Client %s waiting for esp connection", conn.RemoteAddr())
@@ -140,7 +150,7 @@ func (s *Server) HandleConnection(conn net.Conn) error {
 
 		case handlers.GetMeasurementSessionsMessage: //esp not used here
 			s.measurementHandler.AddClient(conn)
-			s.HandleGetMeasurementSessions(ctx, conn)
+			s.HandleGetMeasurementSessions(connCtx, conn)
 			s.mutex.Lock()
 			master, slave := s.MasterState.Status, s.SlaveState.Status
 			s.mutex.Unlock()
@@ -153,11 +163,11 @@ func (s *Server) HandleConnection(conn net.Conn) error {
 
 		case handlers.AddSessionMessage: //esp not used here
 			s.measurementHandler.AddClient(conn)
-			s.HandleAddSession(ctx, conn, msg.Session)
+			s.HandleAddSession(connCtx, conn, msg.Session)
 
 		case handlers.RemoveSessionMessage: // esp not used here
 			s.measurementHandler.AddClient(conn)
-			s.HandleRemoveSession(ctx, conn, msg.SessionId)
+			s.HandleRemoveSession(connCtx, conn, msg.SessionId)
 
 		case handlers.EspMessage:
 			log.Printf("Esp message received: %v", msg)
@@ -180,7 +190,7 @@ func (s *Server) HandleConnection(conn net.Conn) error {
 			if err := s.SendStatus(fmt.Sprintf(msg.Type()+": SF: %f, BW: %f, TX: %f", msg.Sf, msg.Bw, msg.Tx)); err != nil {
 				log.Printf("Error sending settings ack: %v", err)
 			}
-			s.SetSettingsForSession(ctx, models.Params{Sf: msg.Sf, Tx: msg.Tx, Bandwidth: msg.Bw})
+			s.SetSettingsForSession(connCtx, models.Params{Sf: msg.Sf, Tx: msg.Tx, Bandwidth: msg.Bw})
 		case handlers.AckMessage:
 			log.Printf("Received ack message: %v", msg)
 			if err := s.SendMasterStatus("ISALIVE"); err != nil {
@@ -428,4 +438,27 @@ func (s *Server) SetSettingsForSession(ctx context.Context, params models.Params
 			}
 		}
 	}()
+}
+
+func (s *Server) trackConn(conn net.Conn) {
+	s.connMu.Lock()
+	defer s.connMu.Unlock()
+	if s.tracked != nil {
+		s.tracked[conn] = struct{}{}
+	}
+}
+
+func (s *Server) untrackConn(conn net.Conn) {
+	s.connMu.Lock()
+	defer s.connMu.Unlock()
+	delete(s.tracked, conn)
+}
+
+func (s *Server) Shutdown() {
+	s.connMu.Lock()
+	for conn := range s.tracked {
+		_ = conn.Close()
+	}
+	s.connMu.Unlock()
+	s.conns.Wait()
 }

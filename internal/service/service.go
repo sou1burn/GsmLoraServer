@@ -37,8 +37,8 @@ type Repository interface {
 	RemoveSession(ctx context.Context, sessionId int) error
 	GetAllSessions(ctx context.Context) ([]models.Session, error)
 	FindBySession(ctx context.Context, sessionId int) ([]models.Packet, error)
-	CheckSettings(ctx context.Context, sessionId int) (bool, bool, error)
-	AddSettingsToSession(ctx context.Context, sessionId int, sf, tx, bw float32) error
+	SessionHasPackets(ctx context.Context, sessionId int) (bool, error)
+	AddSettingsToSession(ctx context.Context, sessionId int, sf, tx, bw float32) (written bool, err error)
 }
 
 var pendingOrder = []reflect.Type{
@@ -85,12 +85,16 @@ func (s *DataService) GetChannelUsage() float64 {
 }
 
 func (s *DataService) ProcessPacketData(packet models.Packet) error {
+	if packet.PacketNum < 1 || packet.PacketNum > 10 {
+		log.Printf("Invalid packet_num %d for measurement_id %d — packet dropped", packet.PacketNum, packet.MeasurementId)
+		return nil
+	}
 	log.Printf("Processing packet: %v", packet)
 	select {
 	case s.packetChan <- &packet:
 	default:
 		fmt.Printf("Channel full, saving data and starting channel drain: %+v\n", packet)
-		err := s.Repo.Save(s.ctx, &packet, s.espConnector.GetCurrentSession())
+		err := s.Repo.Save(context.WithoutCancel(s.ctx), &packet, s.espConnector.GetCurrentSession())
 		if err != nil {
 			log.Printf("Unexpected error while saving data: %v", err)
 		}
@@ -110,7 +114,8 @@ func (s *DataService) DrainDataChannel() error {
 	for {
 		select {
 		case packet := <-s.packetChan:
-			err := s.Repo.Save(s.ctx, packet, s.espConnector.GetCurrentSession())
+			drainCtx := context.WithoutCancel(s.ctx)
+			err := s.Repo.Save(drainCtx, packet, s.espConnector.GetCurrentSession())
 			if err != nil {
 				log.Printf("Error saving packet during drain: %v", err)
 			}
@@ -163,7 +168,9 @@ func (s *DataService) processPackets() {
 	buffers := make(map[int]*measurementBuffer)
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
-
+	// Отмена контекста останавливает приём пакетов, но не запись уже
+	// принятых (AUDIT.md №6): Save не должен падать на context canceled.
+	saveCtx := context.WithoutCancel(s.ctx)
 	for {
 		select {
 		case <-s.ctx.Done():
@@ -172,13 +179,9 @@ func (s *DataService) processPackets() {
 			if !ok {
 				return
 			}
-			err := s.Repo.Save(s.ctx, packet, s.espConnector.GetCurrentSession())
+			err := s.Repo.Save(saveCtx, packet, s.espConnector.GetCurrentSession())
 			if err != nil {
 				log.Printf("Error saving packet during processing: %v", err)
-			}
-			if packet.PacketNum < 1 || packet.PacketNum > 10 {
-				log.Printf("Invalid packet_num: %d for measurement_id: %d", packet.PacketNum, packet.MeasurementId)
-				continue
 			}
 			buf, exists := buffers[packet.MeasurementId]
 			if !exists {
@@ -387,8 +390,13 @@ func (s *DataService) AddPendingMessage(message string, messageType core.Message
 func (s *DataService) startPendingProcessing() {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
-	for range ticker.C {
-		s.PendingTick()
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		case <-ticker.C:
+			s.PendingTick()
+		}
 	}
 }
 
@@ -418,22 +426,22 @@ func (s *DataService) SendSessionPackets(sessionId int, packets []models.Packet)
 
 func (s *DataService) SetSettingsForSession(ctx context.Context, params models.Params) error {
 	session := s.espConnector.GetCurrentSession()
-	settingsSet, hasPackets, err := s.Repo.CheckSettings(ctx, session)
+
+	written, err := s.Repo.AddSettingsToSession(ctx, session, params.Sf, params.Tx, params.Bandwidth)
+	if err != nil {
+		log.Printf("Error adding settings to session: %v", err)
+		return err
+	}
+	if written {
+		log.Printf("Added settings: %+v to session: %+v", params, session)
+		return nil
+	}
+
+	hasPackets, err := s.Repo.SessionHasPackets(ctx, session)
 	if err != nil {
 		return err
 	}
-	if settingsSet && !hasPackets {
-		log.Printf("Have settings for session: %v, but no packets - changing settings", session)
-		err = s.Repo.AddSettingsToSession(ctx, session, params.Sf, params.Tx, params.Bandwidth)
-		if err != nil {
-			log.Printf("Error adding settings to session: %v", err)
-		}
-
-		log.Printf("Added settings: %+v to session: %+v", params, session)
-		return nil
-
-	} else if hasPackets {
-		log.Printf("Setting already set or already have packets for session: %v", params)
+	if hasPackets {
 		return errors.New("already set or already have packets for session")
 	}
 	return nil

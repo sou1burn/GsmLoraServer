@@ -214,38 +214,31 @@ func (r *Repo) FindBySession(ctx context.Context, sessionId int) ([]models.Packe
 	return packets, nil
 }
 
-func (r *Repo) AddSettingsToSession(ctx context.Context, sessionId int, sf, tx, bw float32) error {
+func (r *Repo) AddSettingsToSession(ctx context.Context, sessionId int, sf, tx, bw float32) (bool, error) {
 	res, err := r.db.ExecContext(ctx, `
 		UPDATE sessions
 		SET sf = $2, tx = $3, bw = $4
 		WHERE id = $1
+		  AND (sf = 0 OR bw = 0 OR tx = 0)
+		  AND NOT EXISTS (SELECT 1 FROM packets WHERE session_id = $1)
 	`, sessionId, sf, tx, bw)
 	if err != nil {
-		return fmt.Errorf("failed to update session settings: %w", err)
+		return false, fmt.Errorf("failed to update session settings: %w", err)
 	}
 	rows, err := res.RowsAffected()
 	if err != nil {
-		return err
+		return false, err
 	}
-	if rows == 0 {
-		return fmt.Errorf("session with id %d not found", sessionId)
-	}
-
-	return nil
+	return rows > 0, nil
 }
 
-func (r *Repo) CheckSettings(ctx context.Context, sessionId int) (missing bool, hasPackets bool, err error) {
-	err = r.db.QueryRowContext(ctx, `
-        SELECT (sf = 0 OR bw = 0 OR tx = 0),
-               EXISTS (SELECT 1 FROM packets WHERE session_id = $1)
-        FROM sessions
-        WHERE id = $1
-    `, sessionId).Scan(&missing, &hasPackets)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, false, fmt.Errorf("session %d: %w", sessionId, ErrNotFound)
-	}
+func (r *Repo) SessionHasPackets(ctx context.Context, sessionId int) (bool, error) {
+	var has bool
+	err := r.db.QueryRowContext(ctx,
+		`SELECT EXISTS (SELECT 1 FROM packets WHERE session_id = $1)`,
+		sessionId).Scan(&has)
 	if err != nil {
-		return false, false, fmt.Errorf("failed to check settings: %w", err)
+		return false, fmt.Errorf("failed to check session packets: %w", err)
 	}
-	return missing, hasPackets, nil
+	return has, nil
 }
