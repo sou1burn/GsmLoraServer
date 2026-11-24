@@ -25,4 +25,4 @@ CLIENT_IP=127.0.0.1
 CLIENT_PORT=9090
 EOF
 
-echo "Созданы файлы: .env.example, .env.local, .env.production"
+echo "Созданы файлы: db.env, esp.env, client.env"
