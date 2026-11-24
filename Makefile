@@ -66,8 +66,9 @@ build-cross: ## Кросс-сборка монолита: linux/darwin/windows (
 run: ## Запустить монолит локально: go run . (нужны db.env и Postgres)
 	$(GO) run .
 
-test: ## Юнит-тесты
-	$(GO) test ./...
+test: 
+	$(GO) test -v -count=1 ./... > test_output.log 2>&1 || { cat test_output.log; exit 1; }
+	@cat test_output.log
 
 test-race: ## Юнит-тесты под race-детектором (как в CI)
 	$(GO) test -race -count=1 ./...
