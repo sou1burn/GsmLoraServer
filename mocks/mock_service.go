@@ -36,33 +36,18 @@ func (m *MockRepository) EXPECT() *MockRepositoryMockRecorder {
 }
 
 // AddSettingsToSession mocks base method.
-func (m *MockRepository) AddSettingsToSession(ctx context.Context, sessionId int, sf, tx, bw float32) error {
+func (m *MockRepository) AddSettingsToSession(ctx context.Context, sessionId int, sf, tx, bw float32) (bool, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "AddSettingsToSession", ctx, sessionId, sf, tx, bw)
-	ret0, _ := ret[0].(error)
-	return ret0
+	ret0, _ := ret[0].(bool)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
 }
 
 // AddSettingsToSession indicates an expected call of AddSettingsToSession.
 func (mr *MockRepositoryMockRecorder) AddSettingsToSession(ctx, sessionId, sf, tx, bw interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AddSettingsToSession", reflect.TypeOf((*MockRepository)(nil).AddSettingsToSession), ctx, sessionId, sf, tx, bw)
-}
-
-// CheckSettings mocks base method.
-func (m *MockRepository) CheckSettings(ctx context.Context, sessionId int) (bool, bool, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "CheckSettings", ctx, sessionId)
-	ret0, _ := ret[0].(bool)
-	ret1, _ := ret[1].(bool)
-	ret2, _ := ret[2].(error)
-	return ret0, ret1, ret2
-}
-
-// CheckSettings indicates an expected call of CheckSettings.
-func (mr *MockRepositoryMockRecorder) CheckSettings(ctx, sessionId interface{}) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CheckSettings", reflect.TypeOf((*MockRepository)(nil).CheckSettings), ctx, sessionId)
 }
 
 // FindBySession mocks base method.
@@ -135,4 +120,19 @@ func (m *MockRepository) SaveSession(ctx context.Context, session models.Session
 func (mr *MockRepositoryMockRecorder) SaveSession(ctx, session interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SaveSession", reflect.TypeOf((*MockRepository)(nil).SaveSession), ctx, session)
+}
+
+// SessionHasPackets mocks base method.
+func (m *MockRepository) SessionHasPackets(ctx context.Context, sessionId int) (bool, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "SessionHasPackets", ctx, sessionId)
+	ret0, _ := ret[0].(bool)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// SessionHasPackets indicates an expected call of SessionHasPackets.
+func (mr *MockRepositoryMockRecorder) SessionHasPackets(ctx, sessionId interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SessionHasPackets", reflect.TypeOf((*MockRepository)(nil).SessionHasPackets), ctx, sessionId)
 }

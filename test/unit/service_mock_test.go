@@ -96,3 +96,62 @@ func TestAddPendingMessage_StoresPerType(t *testing.T) {
 		t.Errorf("сообщение StartMeasurement искажено: %+v", start)
 	}
 }
+
+func TestProcessPacketData_DropsInvalidPacketNum(t *testing.T) {
+	svc, _ := newServiceWithMockRepo(t)
+	for _, num := range []int{0, -3, 11, 999} {
+		if err := svc.ProcessPacketData(models.Packet{MeasurementId: 1, PacketNum: num}); err != nil {
+			t.Fatalf("packet_num=%d: err = %v", num, err)
+		}
+	}
+	if err := svc.ProcessPacketData(models.Packet{MeasurementId: 1, PacketNum: 1}); err != nil {
+		t.Fatalf("валидный пакет отклонён: %v", err)
+	}
+}
+
+func TestSetSettingsForSession_WritesToCleanSession(t *testing.T) {
+	svc, repo := newServiceWithMockRepo(t)
+
+	repo.EXPECT().
+		AddSettingsToSession(gomock.Any(), gomock.Any(), float32(7), float32(14), float32(125)).
+		Times(1).
+		Return(true, nil)
+
+	if err := svc.SetSettingsForSession(context.Background(), models.Params{Sf: 7, Tx: 14, Bandwidth: 125}); err != nil {
+		t.Fatalf("ожидали успех, получили %v", err)
+	}
+}
+
+func TestSetSettingsForSession_RejectsWhenPacketsExist(t *testing.T) {
+	svc, repo := newServiceWithMockRepo(t)
+
+	repo.EXPECT().
+		AddSettingsToSession(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		Times(1).
+		Return(false, nil)
+	repo.EXPECT().
+		SessionHasPackets(gomock.Any(), gomock.Any()).
+		Times(1).
+		Return(true, nil)
+
+	if err := svc.SetSettingsForSession(context.Background(), models.Params{Sf: 7}); err == nil {
+		t.Fatal("ожидали ошибку (ALREADY_SET) при наличии пакетов в сессии")
+	}
+}
+
+func TestSetSettingsForSession_SilentWhenAlreadySet(t *testing.T) {
+	svc, repo := newServiceWithMockRepo(t)
+
+	repo.EXPECT().
+		AddSettingsToSession(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		Times(1).
+		Return(false, nil)
+	repo.EXPECT().
+		SessionHasPackets(gomock.Any(), gomock.Any()).
+		Times(1).
+		Return(false, nil)
+
+	if err := svc.SetSettingsForSession(context.Background(), models.Params{Sf: 7}); err != nil {
+		t.Fatalf("ожидали тихий успех (настройки уже заданы), получили %v", err)
+	}
+}
