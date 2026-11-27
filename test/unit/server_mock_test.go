@@ -169,6 +169,25 @@ func TestHandleGetMeasurementSessions(t *testing.T) {
 	}
 }
 
+func TestSendDeviceStatus_WireText(t *testing.T) {
+	cases := []struct {
+		device telemetryv1.DeviceKind
+		status telemetryv1.DeviceStatus
+		want   string
+	}{
+		{telemetryv1.DeviceKind_DEVICE_KIND_MASTER, telemetryv1.DeviceStatus_DEVICE_STATUS_CONNECTED, "MASTER_STATUS CONNECTED"},
+		{telemetryv1.DeviceKind_DEVICE_KIND_MASTER, telemetryv1.DeviceStatus_DEVICE_STATUS_DISCONNECTED, "MASTER_STATUS DISCONNECTED"},
+		{telemetryv1.DeviceKind_DEVICE_KIND_SLAVE, telemetryv1.DeviceStatus_DEVICE_STATUS_DISCONNECTED, "SLAVE_STATUS DISCONNECTED"},
+	}
+	for _, c := range cases {
+		srv, handler, _ := newServerWithMocks(t)
+		handler.EXPECT().Broadcast(c.want).Times(1).Return(nil)
+		if err := srv.SendDeviceStatus(c.device, c.status); err != nil {
+			t.Errorf("SendDeviceStatus(%v, %v): %v", c.device, c.status, err)
+		}
+	}
+}
+
 func TestHandleSetSettings_Success(t *testing.T) {
 	srv, handler, _ := newServerWithMocks(t)
 	conn := newMockConn()

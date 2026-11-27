@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -65,9 +64,7 @@ type IncomingMeasurementMessage struct {
 type EspMessage struct{}
 
 type SettingsAckMessage struct {
-	Sf float32
-	Tx float32
-	Bw float32
+	Applied *telemetryv1.SettingsConfirmed
 }
 
 type AckMessage struct{}
@@ -76,13 +73,10 @@ type ErrMessage struct {
 	Error string
 }
 
-type MasterStatusMessage struct {
-	Status string
+type StatusChangedMessage struct {
+	Event *telemetryv1.DeviceStatusChanged
 }
 
-type SlaveStatusMessage struct {
-	Status string
-}
 type UnknownMessage struct{}
 
 func (m SetSettingsMessage) Type() string            { return "SET_SETTINGS" }
@@ -95,8 +89,7 @@ func (m EspMessage) Type() string                    { return "ESP_IDENTIFY" }
 func (m IncomingMeasurementMessage) Type() string    { return "ESP_MEASUREMENT" }
 func (m AckMessage) Type() string                    { return "ACK" }
 func (m ErrMessage) Type() string                    { return "ERROR" }
-func (m MasterStatusMessage) Type() string           { return "MASTER_STATUS" }
-func (m SlaveStatusMessage) Type() string            { return "SLAVE_STATUS" }
+func (m StatusChangedMessage) Type() string          { return "STATUS_CHANGED" }
 func (m SettingsAckMessage) Type() string            { return "SETTINGS_ACK" }
 
 func ParseClientMessage(message string) (Message, error) {
@@ -145,24 +138,13 @@ func ParseClientMessage(message string) (Message, error) {
 		return ParseIncomingMeasurement(message)
 
 	} else if strings.HasPrefix(message, "ACK: SSET") {
-		re := regexp.MustCompile(`SF([\d.]+),BW([\d.]+),TX([\d.]+)`)
-		var sf, tx, bw float64
-		var err error
-		matches := re.FindStringSubmatch(message)
-		if len(matches) < 4 {
-			return nil, fmt.Errorf("не удалось найти настройки в строке: %s", message)
+		var sf, bw, tx float32
+		_, err := fmt.Sscanf(message, "ACK: SSET SF%f,BW%f,TX%f", &sf, &bw, &tx)
+		if err != nil {
+			return nil, fmt.Errorf("error parsing ACK: SSET: %w", err)
 		}
-		if sf, err = strconv.ParseFloat(matches[1], 32); err != nil {
-			return nil, fmt.Errorf("ошибка парсинга SF: %w", err)
-		}
-		if bw, err = strconv.ParseFloat(matches[2], 32); err != nil {
-			return nil, fmt.Errorf("ошибка парсинга BW: %w", err)
-		}
-		if tx, err = strconv.ParseFloat(matches[3], 32); err != nil {
-			return nil, fmt.Errorf("ошибка парсинга TX: %w", err)
-		}
-		return SettingsAckMessage{Sf: float32(sf), Bw: float32(bw), Tx: float32(tx)}, nil
-
+		return SettingsAckMessage{Applied: &telemetryv1.SettingsConfirmed{
+			Applied: &telemetryv1.LoRaParams{Sf: sf, Tx: tx, Bw: bw}}}, nil
 	} else if strings.HasPrefix(message, "ACK") {
 		return AckMessage{}, nil
 
@@ -170,17 +152,21 @@ func ParseClientMessage(message string) (Message, error) {
 		return ErrMessage{Error: message}, nil
 
 	} else if strings.Contains(message, "MASTER_STATUS") {
-		status := strings.TrimPrefix(message, "MASTER_STATUS ")
-
-		return MasterStatusMessage{status}, nil
+		return statusChanged("MASTER_STATUS ", telemetryv1.DeviceKind_DEVICE_KIND_MASTER, message), nil
 
 	} else if strings.Contains(message, "SLAVE_STATUS") {
-		status := strings.TrimPrefix(message, "SLAVE_STATUS ")
-
-		return SlaveStatusMessage{status}, nil
+		return statusChanged("SLAVE_STATUS ", telemetryv1.DeviceKind_DEVICE_KIND_SLAVE, message), nil
 	}
 
 	return UnknownMessage{}, nil
+}
+
+func statusChanged(prefix string, device telemetryv1.DeviceKind, message string) StatusChangedMessage {
+	status := telemetryv1.DeviceStatus_DEVICE_STATUS_DISCONNECTED
+	if strings.TrimPrefix(message, prefix) == "ISALIVE" {
+		status = telemetryv1.DeviceStatus_DEVICE_STATUS_CONNECTED
+	}
+	return StatusChangedMessage{Event: &telemetryv1.DeviceStatusChanged{Device: device, Status: status}}
 }
 
 func ParseSession(data string) (models.Session, error) {

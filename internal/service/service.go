@@ -134,7 +134,7 @@ func (s *DataService) processPackets() {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	// Отмена контекста останавливает приём пакетов, но не запись уже
-	// принятых (AUDIT.md №6): Save не должен падать на context canceled.
+	// принятых. Save не должен падать на context canceled.
 	saveCtx := context.WithoutCancel(s.ctx)
 	for {
 		select {

@@ -34,7 +34,7 @@ func (c *lockedConn) Write(b []byte) (int, error) {
 
 type DeviceStatus struct {
 	LastUpdated time.Time
-	Status      string
+	Status      telemetryv1.DeviceStatus
 }
 
 type Server struct {
@@ -150,11 +150,11 @@ func (s *Server) HandleConnection(ctx context.Context, conn net.Conn) error {
 			s.mutex.Lock()
 			master, slave := s.MasterState.Status, s.SlaveState.Status
 			s.mutex.Unlock()
-			if master != "" {
-				s.write(conn, "MASTER_STATUS "+master)
+			if master != telemetryv1.DeviceStatus_DEVICE_STATUS_UNSPECIFIED {
+				s.write(conn, renderDeviceStatus(telemetryv1.DeviceKind_DEVICE_KIND_MASTER, master))
 			}
-			if slave != "" {
-				s.write(conn, "SLAVE_STATUS "+slave)
+			if slave != telemetryv1.DeviceStatus_DEVICE_STATUS_UNSPECIFIED {
+				s.write(conn, renderDeviceStatus(telemetryv1.DeviceKind_DEVICE_KIND_SLAVE, slave))
 			}
 
 		case handlers.AddSessionMessage: //esp not used here
@@ -168,7 +168,7 @@ func (s *Server) HandleConnection(ctx context.Context, conn net.Conn) error {
 		case handlers.EspMessage:
 			log.Printf("Esp message received: %v", msg)
 			s.HandleEspConnection(conn)
-			if err := s.SendMasterStatus("ISALIVE"); err != nil {
+			if err := s.SendDeviceStatus(telemetryv1.DeviceKind_DEVICE_KIND_MASTER, telemetryv1.DeviceStatus_DEVICE_STATUS_CONNECTED); err != nil {
 				log.Printf("Error sending master status: %v", err)
 			}
 			s.StartStatusMonitor()
@@ -183,13 +183,14 @@ func (s *Server) HandleConnection(ctx context.Context, conn net.Conn) error {
 			}
 		case handlers.SettingsAckMessage:
 			log.Printf("Received settings ack: %v", msg)
-			if err := s.SendStatus(fmt.Sprintf(msg.Type()+": SF: %f, BW: %f, TX: %f", msg.Sf, msg.Bw, msg.Tx)); err != nil {
+			if err := s.SendStatus(renderSettingsConfirmed(msg.Applied)); err != nil {
 				log.Printf("Error sending settings ack: %v", err)
 			}
-			s.SetSettingsForSession(connCtx, models.Params{Sf: msg.Sf, Tx: msg.Tx, Bandwidth: msg.Bw})
+			applied := msg.Applied.GetApplied()
+			s.SetSettingsForSession(ctx, models.Params{Sf: applied.GetSf(), Tx: applied.GetTx(), Bandwidth: applied.GetBw()})
 		case handlers.AckMessage:
 			log.Printf("Received ack message: %v", msg)
-			if err := s.SendMasterStatus("ISALIVE"); err != nil {
+			if err := s.SendDeviceStatus(telemetryv1.DeviceKind_DEVICE_KIND_MASTER, telemetryv1.DeviceStatus_DEVICE_STATUS_CONNECTED); err != nil {
 				log.Printf("Error sending master status: %v", err)
 			}
 		case handlers.ErrMessage:
@@ -197,15 +198,10 @@ func (s *Server) HandleConnection(ctx context.Context, conn net.Conn) error {
 		case handlers.UnknownMessage:
 			log.Printf("Unknown message type: %v", message)
 			s.replyError(conn, fmt.Errorf("unknown command: %s", message))
-		case handlers.MasterStatusMessage:
-			log.Printf("New status for master: %v", msg.Status)
-			if err := s.SendMasterStatus(msg.Status); err != nil {
-				log.Printf("Error sending master status: %v", err)
-			}
-		case handlers.SlaveStatusMessage:
-			log.Printf("New status for slave: %v", msg.Status)
-			if err := s.SendSlaveStatus(msg.Status); err != nil {
-				log.Printf("Error sending slave status: %v", err)
+		case handlers.StatusChangedMessage:
+			log.Printf("New device status: %v", msg.Event)
+			if err := s.SendDeviceStatus(msg.Event.GetDevice(), msg.Event.GetStatus()); err != nil {
+				log.Printf("Error sending device status: %v", err)
 			}
 		default:
 			log.Printf("Unhandled message type: %T", msg)
@@ -310,26 +306,32 @@ func (s *Server) HandleEspConnection(conn net.Conn) {
 	log.Printf("ESP_OK")
 }
 
-func (s *Server) SendMasterStatus(status string) error {
-	return s.setStatus(&s.MasterState, "MASTER_STATUS", status)
-}
-
-func (s *Server) SendSlaveStatus(status string) error {
-	return s.setStatus(&s.SlaveState, "SLAVE_STATUS", status)
-}
-
-func (s *Server) setStatus(state *DeviceStatus, prefix, status string) error {
-	s.mutex.Lock()
-	state.Status = "DISCONNECTED"
-	if status == "ISALIVE" {
-		state.Status = "CONNECTED"
+func (s *Server) SendDeviceStatus(device telemetryv1.DeviceKind, status telemetryv1.DeviceStatus) error {
+	state := &s.MasterState
+	if device == telemetryv1.DeviceKind_DEVICE_KIND_SLAVE {
+		state = &s.SlaveState
 	}
+	s.mutex.Lock()
+	state.Status = status
 	state.LastUpdated = time.Now()
-	msg := prefix + " " + state.Status
 	s.mutex.Unlock()
 
+	msg := renderDeviceStatus(device, status)
 	log.Printf("Sending status: %s", msg)
 	return s.SendStatus(msg)
+}
+
+func renderDeviceStatus(device telemetryv1.DeviceKind, status telemetryv1.DeviceStatus) string {
+	name := "SLAVE_STATUS"
+	if device == telemetryv1.DeviceKind_DEVICE_KIND_MASTER {
+		name = "MASTER_STATUS"
+	}
+	return name + " " + strings.TrimPrefix(status.String(), "DEVICE_STATUS_")
+}
+
+func renderSettingsConfirmed(c *telemetryv1.SettingsConfirmed) string {
+	p := c.GetApplied()
+	return fmt.Sprintf("SETTINGS_ACK: SF: %f, BW: %f, TX: %f", p.GetSf(), p.GetBw(), p.GetTx())
 }
 
 func (s *Server) SendStatus(status string) error {
@@ -350,7 +352,7 @@ func (s *Server) StartStatusMonitor() {
 }
 
 func isStale(state DeviceStatus) bool {
-	return !state.LastUpdated.IsZero() && time.Since(state.LastUpdated) > statusTimeout && state.Status != "DISCONNECTED"
+	return !state.LastUpdated.IsZero() && time.Since(state.LastUpdated) > statusTimeout && state.Status != telemetryv1.DeviceStatus_DEVICE_STATUS_DISCONNECTED
 }
 
 func (s *Server) checkAndUpdateStatus() {
@@ -360,13 +362,13 @@ func (s *Server) checkAndUpdateStatus() {
 
 	if masterStale {
 		log.Printf("Master state did not update for over 2 mins, change to DISCONNECTED")
-		if err := s.SendMasterStatus("DISCONNECTED"); err != nil {
+		if err := s.SendDeviceStatus(telemetryv1.DeviceKind_DEVICE_KIND_MASTER, telemetryv1.DeviceStatus_DEVICE_STATUS_DISCONNECTED); err != nil {
 			log.Printf("Error sending master status: %v", err)
 		}
 	}
 	if slaveStale {
 		log.Printf("Slave state did not update for over 2 mins, change to DISCONNECTED")
-		if err := s.SendSlaveStatus("DISCONNECTED"); err != nil {
+		if err := s.SendDeviceStatus(telemetryv1.DeviceKind_DEVICE_KIND_SLAVE, telemetryv1.DeviceStatus_DEVICE_STATUS_DISCONNECTED); err != nil {
 			log.Printf("Error sending slave status: %v", err)
 		}
 	}

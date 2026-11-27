@@ -150,6 +150,18 @@ func TestParseClientMessage(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name:  "ACK: SSET",
+			input: "ACK: SSET SF7,BW125,TX14",
+			want: handlers.SettingsAckMessage{Applied: &telemetryv1.SettingsConfirmed{
+				Applied: &telemetryv1.LoRaParams{Sf: 7, Tx: 14, Bw: 125},
+			}},
+		},
+		{
+			name:    "ACK: SSET invalid",
+			input:   "ACK: SSET SF7",
+			wantErr: true,
+		},
+		{
 			name:  "ACK",
 			input: "ACK something",
 			want:  handlers.AckMessage{},
@@ -160,14 +172,22 @@ func TestParseClientMessage(t *testing.T) {
 			want:  handlers.ErrMessage{}, // error string is unexported, we only check type
 		},
 		{
-			name:  "MASTER_STATUS",
+			name:  "MASTER_STATUS ISALIVE",
+			input: "MASTER_STATUS ISALIVE",
+			want: handlers.StatusChangedMessage{Event: &telemetryv1.DeviceStatusChanged{
+				Device: telemetryv1.DeviceKind_DEVICE_KIND_MASTER, Status: telemetryv1.DeviceStatus_DEVICE_STATUS_CONNECTED}},
+		},
+		{
+			name:  "MASTER_STATUS unknown → DISCONNECTED",
 			input: "MASTER_STATUS idle",
-			want:  handlers.MasterStatusMessage{Status: "idle"},
+			want: handlers.StatusChangedMessage{Event: &telemetryv1.DeviceStatusChanged{
+				Device: telemetryv1.DeviceKind_DEVICE_KIND_MASTER, Status: telemetryv1.DeviceStatus_DEVICE_STATUS_DISCONNECTED}},
 		},
 		{
 			name:  "SLAVE_STATUS",
 			input: "SLAVE_STATUS busy",
-			want:  handlers.SlaveStatusMessage{Status: "busy"},
+			want: handlers.StatusChangedMessage{Event: &telemetryv1.DeviceStatusChanged{
+				Device: telemetryv1.DeviceKind_DEVICE_KIND_SLAVE, Status: telemetryv1.DeviceStatus_DEVICE_STATUS_DISCONNECTED}},
 		},
 		{
 			name:  "unknown message",
@@ -240,15 +260,14 @@ func TestParseClientMessage(t *testing.T) {
 				if !ok {
 					t.Errorf("got %T, want ErrMessage", got)
 				}
-				// error string is unexported; we don't verify its content.
-			case handlers.MasterStatusMessage:
-				g, ok := got.(handlers.MasterStatusMessage)
-				if !ok || g.Status != want.Status {
+			case handlers.SettingsAckMessage:
+				g, ok := got.(handlers.SettingsAckMessage)
+				if !ok || !proto.Equal(g.Applied, want.Applied) {
 					t.Errorf("got %+v, want %+v", g, want)
 				}
-			case handlers.SlaveStatusMessage:
-				g, ok := got.(handlers.SlaveStatusMessage)
-				if !ok || g.Status != want.Status {
+			case handlers.StatusChangedMessage:
+				g, ok := got.(handlers.StatusChangedMessage)
+				if !ok || !proto.Equal(g.Event, want.Event) {
 					t.Errorf("got %+v, want %+v", g, want)
 				}
 			case handlers.UnknownMessage:
