@@ -6,12 +6,10 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"reflect"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 
+	telemetryv1 "github.com/sou1burn/GsmLoraServer/api/proto/telemetry/v1"
 	"github.com/sou1burn/GsmLoraServer/internal/core"
 	"github.com/sou1burn/GsmLoraServer/internal/esp"
 	"github.com/sou1burn/GsmLoraServer/internal/handlers"
@@ -27,7 +25,7 @@ type measurementBuffer struct {
 
 type PendingMessage struct {
 	Type      handlers.Message
-	Message   string
+	Message   string // сырая строка семейств, ещё не переведённых на канон (START_MEASUREMENT)
 	Timestamp time.Time
 }
 
@@ -41,9 +39,9 @@ type Repository interface {
 	AddSettingsToSession(ctx context.Context, sessionId int, sf, tx, bw float32) (written bool, err error)
 }
 
-var pendingOrder = []reflect.Type{
-	reflect.TypeOf(handlers.SetSettingsMessage{}),
-	reflect.TypeOf(handlers.StartMeasurementMessage{}),
+var pendingOrder = []string{
+	"SET_SETTINGS",
+	"START_MEASUREMENT",
 }
 
 type DataService struct {
@@ -53,7 +51,7 @@ type DataService struct {
 	mu                  sync.RWMutex
 	espConnector        *esp.ESPConnector
 	clients             map[net.Conn]struct{}
-	PendingMessages     map[reflect.Type]*PendingMessage
+	PendingMessages     map[string]*PendingMessage
 	pendingMessagesLock sync.Mutex
 }
 
@@ -64,7 +62,7 @@ func NewDataService(connector *esp.ESPConnector) *DataService {
 		Repo:            nil,
 		espConnector:    connector,
 		clients:         make(map[net.Conn]struct{}),
-		PendingMessages: make(map[reflect.Type]*PendingMessage, 5),
+		PendingMessages: make(map[string]*PendingMessage, 5),
 	}
 	return service
 }
@@ -126,40 +124,7 @@ func (s *DataService) DrainDataChannel() error {
 	}
 }
 
-func (s *DataService) ProcessInterfaceSettingChange(message string) error {
-	cleanedMessage := strings.TrimPrefix(message, "SET_SETTINGS: ")
-	parts := strings.Split(cleanedMessage, ", ")
-
-	if s.espConnector.GetConn() == nil || !s.espConnector.IsConnected() {
-		return errors.New("ESP_NOT_CONNECTED")
-	}
-
-	params := models.Params{}
-
-	for _, part := range parts {
-		keyVal := strings.Split(part, "=")
-		if len(keyVal) != 2 {
-			continue
-		}
-
-		key := strings.TrimSpace(keyVal[0])
-		value := strings.TrimSpace(keyVal[1])
-
-		val, err := strconv.ParseFloat(value, 32)
-		if err != nil {
-			return fmt.Errorf("invalid value for %s: %w", key, err)
-		}
-
-		switch key {
-		case "SF":
-			params.Sf = float32(val)
-		case "TX":
-			params.Tx = float32(val)
-		case "BW":
-			params.Bandwidth = float32(val)
-		}
-	}
-
+func (s *DataService) ProcessInterfaceSettingChange(params *telemetryv1.LoRaParams) error {
 	log.Printf("Got params: %+v\n", params)
 	return s.espConnector.SendParamsToDevice(params)
 }
@@ -259,16 +224,16 @@ func calculateAverage(packets []*models.Packet) *models.Packet {
 func (s *DataService) processPendingMessages() {
 	s.pendingMessagesLock.Lock()
 	defer s.pendingMessagesLock.Unlock()
-	for _, typ := range pendingOrder {
-		pending, ok := s.PendingMessages[typ]
+	for _, family := range pendingOrder {
+		pending, ok := s.PendingMessages[family]
 		if !ok {
 			continue
 		}
 		var err error
-		switch pending.Type.(type) {
-		case handlers.SetSettingsMessage:
-			err = s.ProcessInterfaceSettingChange(pending.Message)
-		case handlers.StartMeasurementMessage:
+		switch family {
+		case "SET_SETTINGS":
+			err = s.ProcessInterfaceSettingChange(pending.Type.(handlers.SetSettingsMessage).Params.GetParams())
+		case "START_MEASUREMENT":
 			var msg handlers.Message
 			msg, err = handlers.ParseClientMessage(pending.Message)
 			if start, ok := msg.(handlers.StartMeasurementMessage); err == nil && ok {
@@ -276,11 +241,11 @@ func (s *DataService) processPendingMessages() {
 			}
 		}
 		if err != nil {
-			log.Printf("Error processing pending %s: %v", pending.Type.Type(), err)
+			log.Printf("Error processing pending %s: %v", family, err)
 			continue
 		}
-		delete(s.PendingMessages, typ)
-		log.Printf("Pending %s processed successfully", pending.Type.Type())
+		delete(s.PendingMessages, family)
+		log.Printf("Pending %s processed successfully", family)
 	}
 }
 
@@ -376,11 +341,11 @@ func (s *DataService) AddPendingMessage(message string, messageType core.Message
 		Timestamp: time.Now(),
 	}
 
-	msgType := reflect.TypeOf(messageType)
+	family := messageType.Type()
 
-	if existing, exists := s.PendingMessages[msgType]; !exists ||
+	if existing, exists := s.PendingMessages[family]; !exists ||
 		msg.Timestamp.After(existing.Timestamp) {
-		s.PendingMessages[msgType] = msg
+		s.PendingMessages[family] = msg
 		log.Printf("Added new pending message: %v", msg)
 		return
 	}

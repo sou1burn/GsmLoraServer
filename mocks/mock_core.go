@@ -10,6 +10,7 @@ import (
 	reflect "reflect"
 
 	gomock "github.com/golang/mock/gomock"
+	telemetryv1 "github.com/sou1burn/GsmLoraServer/api/proto/telemetry/v1"
 	core "github.com/sou1burn/GsmLoraServer/internal/core"
 	models "github.com/sou1burn/GsmLoraServer/internal/models"
 )
@@ -143,7 +144,7 @@ func (mr *MockMeasurementHandlerMockRecorder) GetAllSessions(ctx interface{}) *g
 }
 
 // ProcessInterfaceSettingChange mocks base method.
-func (m *MockMeasurementHandler) ProcessInterfaceSettingChange(msg string) error {
+func (m *MockMeasurementHandler) ProcessInterfaceSettingChange(msg *telemetryv1.LoRaParams) error {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "ProcessInterfaceSettingChange", msg)
 	ret0, _ := ret[0].(error)

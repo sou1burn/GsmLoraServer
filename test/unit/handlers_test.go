@@ -5,6 +5,9 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/protobuf/proto"
+
+	telemetryv1 "github.com/sou1burn/GsmLoraServer/api/proto/telemetry/v1"
 	"github.com/sou1burn/GsmLoraServer/internal/handlers"
 	"github.com/sou1burn/GsmLoraServer/internal/models"
 )
@@ -74,7 +77,9 @@ func TestParseClientMessage(t *testing.T) {
 			name:  "SET_SETTINGS",
 			input: "SET_SETTINGS: SF=12, TX=20, BW=125",
 			want: handlers.SetSettingsMessage{
-				Params: models.Params{Sf: 12, Tx: 20, Bandwidth: 125},
+				Params: &telemetryv1.SetSettings{
+					Params: &telemetryv1.LoRaParams{Sf: 12, Tx: 20, Bw: 125},
+				},
 			},
 		},
 		{
@@ -186,7 +191,7 @@ func TestParseClientMessage(t *testing.T) {
 			switch want := tt.want.(type) {
 			case handlers.SetSettingsMessage:
 				g, ok := got.(handlers.SetSettingsMessage)
-				if !ok || g.Params != want.Params {
+				if !ok || !proto.Equal(g.Params, want.Params) {
 					t.Errorf("got %+v, want %+v", g, want)
 				}
 			case handlers.StartMeasurementMessage:

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	telemetryv1 "github.com/sou1burn/GsmLoraServer/api/proto/telemetry/v1"
 	"github.com/sou1burn/GsmLoraServer/internal/models"
 )
 
@@ -39,7 +40,7 @@ type Message interface {
 }
 
 type SetSettingsMessage struct {
-	Params models.Params
+	Params *telemetryv1.SetSettings
 }
 
 type StartMeasurementMessage struct {
@@ -64,9 +65,7 @@ type IncomingMeasurementMessage struct {
 type EspMessage struct{}
 
 type SettingsAckMessage struct {
-	Sf float32
-	Tx float32
-	Bw float32
+	Applied *telemetryv1.SettingsConfirmed
 }
 
 type AckMessage struct{}
@@ -100,12 +99,14 @@ func (m SettingsAckMessage) Type() string            { return "SETTINGS_ACK" }
 
 func ParseClientMessage(message string) (Message, error) {
 	if strings.HasPrefix(message, "SET_SETTINGS") {
-		par := models.Params{}
-		_, err := fmt.Sscanf(message, "SET_SETTINGS: SF=%f, TX=%f, BW=%f", &par.Sf, &par.Tx, &par.Bandwidth)
+		var sf, bw, tx float32
+		_, err := fmt.Sscanf(message, "SET_SETTINGS: SF=%f, TX=%f, BW=%f", &sf, &tx, &bw)
 		if err != nil {
 			return nil, fmt.Errorf("error parsing SET_SETTINGS: %w", err)
 		}
-		return SetSettingsMessage{Params: par}, nil
+		return SetSettingsMessage{Params: &telemetryv1.SetSettings{
+			Params: &telemetryv1.LoRaParams{Sf: sf, Tx: tx, Bw: bw},
+		}}, nil
 
 	} else if strings.HasPrefix(message, "START_MEASUREMENT") {
 		cleaned := strings.TrimPrefix(message, "START_MEASUREMENT: ")

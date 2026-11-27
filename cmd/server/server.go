@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	telemetryv1 "github.com/sou1burn/GsmLoraServer/api/proto/telemetry/v1"
 	"github.com/sou1burn/GsmLoraServer/internal/core"
 	"github.com/sou1burn/GsmLoraServer/internal/esp"
 	"github.com/sou1burn/GsmLoraServer/internal/handlers"
@@ -125,11 +126,12 @@ func (s *Server) HandleConnection(ctx context.Context, conn net.Conn) error {
 		case handlers.SetSettingsMessage:
 			s.isMeasurementStarted.Store(false)
 			s.measurementHandler.AddClient(conn)
+			params := msg.Params.GetParams()
 			if s.connector.IsConnected() {
-				s.HandleSetSettings(conn, message)
+				s.HandleSetSettings(conn, params)
 			} else {
 				log.Printf("Client %s waiting for esp connection", conn.RemoteAddr())
-				s.measurementHandler.AddPendingMessage(message, handlers.SetSettingsMessage{})
+				s.measurementHandler.AddPendingMessage(message, msg)
 			}
 
 		case handlers.StartMeasurementMessage:
@@ -229,8 +231,8 @@ func (s *Server) replyError(conn net.Conn, err error) {
 	s.write(conn, "ERROR: "+err.Error())
 }
 
-func (s *Server) HandleSetSettings(conn net.Conn, message string) {
-	if err := s.measurementHandler.ProcessInterfaceSettingChange(message); err != nil {
+func (s *Server) HandleSetSettings(conn net.Conn, params *telemetryv1.LoRaParams) {
+	if err := s.measurementHandler.ProcessInterfaceSettingChange(params); err != nil {
 		log.Printf("Error sending interface request: %v", err)
 		s.replyError(conn, err)
 	}

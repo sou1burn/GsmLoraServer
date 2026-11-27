@@ -3,11 +3,11 @@ package unit
 import (
 	"context"
 	"errors"
-	"reflect"
 	"testing"
 
 	"github.com/golang/mock/gomock"
 
+	telemetryv1 "github.com/sou1burn/GsmLoraServer/api/proto/telemetry/v1"
 	"github.com/sou1burn/GsmLoraServer/internal/esp"
 	"github.com/sou1burn/GsmLoraServer/internal/handlers"
 	"github.com/sou1burn/GsmLoraServer/internal/models"
@@ -77,18 +77,21 @@ func TestRemoveSession_RepoErrorPropagates(t *testing.T) {
 func TestAddPendingMessage_StoresPerType(t *testing.T) {
 	svc, _ := newServiceWithMockRepo(t)
 
-	svc.AddPendingMessage("SET_SETTINGS: SF=7, TX=14, BW=125", handlers.SetSettingsMessage{})
+	svc.AddPendingMessage("SET_SETTINGS: SF=7, TX=14, BW=125", handlers.SetSettingsMessage{
+		Params: &telemetryv1.SetSettings{Params: &telemetryv1.LoRaParams{Sf: 7, Tx: 14, Bw: 125}},
+	})
 	svc.AddPendingMessage("START_MEASUREMENT: 3", handlers.StartMeasurementMessage{})
 
-	setSettings := svc.PendingMessages[reflect.TypeOf(handlers.SetSettingsMessage{})]
+	setSettings := svc.PendingMessages["SET_SETTINGS"]
 	if setSettings == nil {
 		t.Fatal("ожидали отложенное сообщение SetSettingsMessage")
 	}
-	if setSettings.Message != "SET_SETTINGS: SF=7, TX=14, BW=125" {
-		t.Errorf("сообщение SetSettings искажено: %+v", setSettings)
+	got := setSettings.Type.(handlers.SetSettingsMessage).Params.GetParams()
+	if got.GetSf() != 7 || got.GetTx() != 14 || got.GetBw() != 125 {
+		t.Errorf("канон SetSettings искажён: %+v", got)
 	}
 
-	start := svc.PendingMessages[reflect.TypeOf(handlers.StartMeasurementMessage{})]
+	start := svc.PendingMessages["START_MEASUREMENT"]
 	if start == nil {
 		t.Fatal("ожидали отложенное сообщение StartMeasurementMessage")
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 
+	telemetryv1 "github.com/sou1burn/GsmLoraServer/api/proto/telemetry/v1"
 	"github.com/sou1burn/GsmLoraServer/internal/models"
 )
 
@@ -13,7 +14,7 @@ type Message interface {
 
 type MeasurementHandler interface {
 	ProcessPacketData(packet models.Packet) error
-	ProcessInterfaceSettingChange(msg string) error
+	ProcessInterfaceSettingChange(params *telemetryv1.LoRaParams) error
 	GetAllSessions(ctx context.Context) ([]models.Session, error)
 	SendAllSessions(conn net.Conn, data string) error
 	SaveSession(ctx context.Context, session models.Session) error

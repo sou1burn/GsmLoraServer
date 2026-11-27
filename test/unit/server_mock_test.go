@@ -11,6 +11,7 @@ import (
 
 	"github.com/golang/mock/gomock"
 
+	telemetryv1 "github.com/sou1burn/GsmLoraServer/api/proto/telemetry/v1"
 	"github.com/sou1burn/GsmLoraServer/cmd/server"
 	"github.com/sou1burn/GsmLoraServer/internal/models"
 	mocks "github.com/sou1burn/GsmLoraServer/mocks"
@@ -171,28 +172,28 @@ func TestHandleGetMeasurementSessions(t *testing.T) {
 func TestHandleSetSettings_Success(t *testing.T) {
 	srv, handler, _ := newServerWithMocks(t)
 	conn := newMockConn()
-	message := "SET_SETTINGS: SF=7, TX=14, BW=125"
+	params := &telemetryv1.LoRaParams{Sf: 7, Tx: 14, Bw: 125}
 
 	handler.EXPECT().
-		ProcessInterfaceSettingChange(message).
+		ProcessInterfaceSettingChange(params).
 		Times(1).
 		Return(nil)
 
-	srv.HandleSetSettings(conn, message)
+	srv.HandleSetSettings(conn, params)
 }
 
 func TestHandleSetSettings_Error(t *testing.T) {
 	srv, handler, connector := newServerWithMocks(t)
 	conn := newMockConn()
-	message := "SET_SETTINGS: SF=7, TX=14, BW=125"
+	params := &telemetryv1.LoRaParams{Sf: 7, Tx: 14, Bw: 125}
 
 	connector.EXPECT().GetConn().Return(nil).AnyTimes()
 	handler.EXPECT().
-		ProcessInterfaceSettingChange(message).
+		ProcessInterfaceSettingChange(params).
 		Times(1).
 		Return(errors.New("ESP_NOT_CONNECTED"))
 
-	srv.HandleSetSettings(conn, message)
+	srv.HandleSetSettings(conn, params)
 
 	if written := conn.GetWrittenData(); !strings.Contains(written, "ERROR") {
 		t.Errorf("при ошибке клиенту должен отправляться ERROR, записано: %q", written)

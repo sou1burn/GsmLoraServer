@@ -7,7 +7,7 @@ import (
 	"net"
 	"sync"
 
-	"github.com/sou1burn/GsmLoraServer/internal/models"
+	telemetryv1 "github.com/sou1burn/GsmLoraServer/api/proto/telemetry/v1"
 )
 
 type ESPConnector struct {
@@ -77,7 +77,7 @@ func (e *ESPConnector) SendCommand(command string, sessionId int) error {
 	return nil
 }
 
-func (e *ESPConnector) SendParamsToDevice(params models.Params) error {
+func (e *ESPConnector) SendParamsToDevice(params *telemetryv1.LoRaParams) error {
 	e.mutex.Lock()
 	defer e.mutex.Unlock()
 
@@ -86,7 +86,7 @@ func (e *ESPConnector) SendParamsToDevice(params models.Params) error {
 		return errors.New("ESP_NOT_CONNECTED")
 	}
 
-	message := fmt.Sprintf("SET_SETTINGS: SF=%.1f, TX=%.1f, BW=%.1f", params.Sf, params.Tx, params.Bandwidth)
+	message := fmt.Sprintf("SET_SETTINGS: SF=%.1f, TX=%.1f, BW=%.1f", params.Sf, params.Tx, params.Bw)
 
 	_, err := e.Conn.Write([]byte(message + "\n"))
 	if err != nil {
