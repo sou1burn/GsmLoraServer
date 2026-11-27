@@ -1,20 +1,81 @@
+version: "2"
+
+run:
+  timeout: 5m
+  modules-download-mode: readonly
+
 linters:
+  default: none
   enable:
-    - govet
-    - errcheck
-    - staticcheck
-    - gosec
-    - gocyclo
+    # --- базовая гигиена ---
+    - errcheck      # непроверенные ошибки
+    - govet         # go vet
+    - ineffassign   # бесполезные присваивания
+    - misspell      # опечатки в комментариях
+    - staticcheck   # staticcheck + gosimple + stylecheck (в v2 объединены)
+    - unused        # неиспользуемый код
+    - unconvert     # лишние преобразования типов
+
+    # --- качество кода ---
+    - copyloopvar   # ненужное копирование переменных цикла (Go >= 1.22)
+    - errorlint     # errors.Is/As и %w вместо == / строковых ошибок
+    - gocyclo       # цикломатическая сложность
+    - gosec         # безопасность (G101-G602)
+    - unparam       # параметры, которые всегда одинаковы или не используются
+    - usestdlibvars # http.MethodGet и т.п. вместо строк
+
+    # --- HTTP/сеть: пригодятся на этапах 4-6 (Redis, metrics, OTel) ---
+    - bodyclose     # незакрытые тела HTTP-ответов
+
+    # --- будущее (этап 6): структурные логи ---
+    - sloglint      # дисциплина slog: без смешивания key-value и attr
+
+    # --- гигиена самого конфига/кода ---
+    - nolintlint    # nolint только с именем линтера и объяснением
+    # ПРИМЕЧАНИЕ: когда появятся HTTP-клиенты (этапы 4-6 плана — Redis,
+    # Prometheus, OTel), добавьте сюда noctx (запросы без context).
+
+  settings:
+    gocyclo:
+      min-complexity: 30
+    gosec:
+      excludes:
+        # G104 (необработанная ошибка)
+        - G104
+        # G115 (integer overflow при конверсиях)
+        - G115
+    errcheck:
+      exclude-functions:
+        - (net.Conn).Close
+        - (net.Listener).Close
+        - (*os.File).Close
+        - (*database/sql.DB).Close
+        - (*database/sql.Rows).Close
+    sloglint:
+      no-mixed-args: true
+    unparam:
+      check-exported: false
+
+  exclusions:
+    paths:
+      - mocks
+    rules:
+      - path: _test\.go
+        linters:
+          - gosec
+          - errcheck
+          - unparam
+          - gocyclo
+
+formatters:
+  enable:
     - gofmt
     - goimports
-    - unconvert
-    - ineffassign
-    - misspell
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/sou1burn/GsmLoraServer
 
 issues:
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        - gosec
-
-version: "2"
+  max-issues-per-linter: 0
+  max-same-issues: 0

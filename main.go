@@ -1,15 +1,18 @@
 package main
 
 import (
-	"Lora_Esp_Gsm_Gps_project/cmd/app"
-	"Lora_Esp_Gsm_Gps_project/cmd/server"
-	"Lora_Esp_Gsm_Gps_project/configs"
-	"Lora_Esp_Gsm_Gps_project/internal/esp"
 	"context"
 	"io"
 	"log"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
+
+	"github.com/sou1burn/GsmLoraServer/cmd/app"
+	"github.com/sou1burn/GsmLoraServer/cmd/server"
+	"github.com/sou1burn/GsmLoraServer/configs"
+	"github.com/sou1burn/GsmLoraServer/internal/esp"
 )
 
 var (
@@ -19,20 +22,22 @@ var (
 
 func main() {
 	log.Printf("Lora ESP GSM GPS Project v.%s (built %s)\n", version, buildTime)
-	logFile, err := os.OpenFile("app.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
-	if err != nil {
-		log.Printf("Не удалось открыть файл для логов: %v", err)
-	} else {
-		multiWriter := io.MultiWriter(os.Stdout, logFile)
-		log.SetOutput(multiWriter)
-	}
 
-	defer func(logFile *os.File) {
-		err := logFile.Close()
+	if _, dockerEnvErr := os.Stat("/.dockerenv"); dockerEnvErr != nil {
+		logFile, err := os.OpenFile("app.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 		if err != nil {
-			log.Printf("Error closing log file: %v", err)
+			log.Printf("Не удалось открыть файл для логов: %v", err)
+		} else {
+			multiWriter := io.MultiWriter(os.Stdout, logFile)
+			log.SetOutput(multiWriter)
+			defer func(logFile *os.File) {
+				err := logFile.Close()
+				if err != nil {
+					log.Printf("Error closing log file: %v", err)
+				}
+			}(logFile)
 		}
-	}(logFile)
+	}
 
 	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
 
@@ -44,7 +49,7 @@ func main() {
 	appInstance.EspConnector = espConnector
 	appInstance.InitService(espConnector)
 
-	err = appInstance.InitDB(dbCfg)
+	err := appInstance.InitDB(dbCfg)
 	if err != nil {
 		log.Println("Error connecting to database:", err)
 		return
@@ -57,13 +62,19 @@ func main() {
 	}(appInstance)
 
 	srv := server.NewServer(appInstance.DataService, espConnector)
-	appInstance.DataService.StartProcessing(context.Background())
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	appInstance.DataService.StartProcessing(ctx)
+	defer cancel()
 
-	go func() {
-		if err := srv.StartServer(dbCfg.Port); err != nil {
-			log.Fatalf("Error starting server: %v", err)
+	go func(ctx context.Context) {
+		if err := srv.StartServer(ctx, dbCfg.Port); err != nil {
+			log.Printf("Error starting server: %v", err)
 		}
-	}()
+	}(ctx)
 
-	select {}
+	<-ctx.Done()
+	srv.Shutdown()
+	if err := appInstance.DataService.DrainDataChannel(); err != nil {
+		log.Printf("Error draining data chan: %v", err)
+	}
 }

@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"Lora_Esp_Gsm_Gps_project/internal/models"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,48 +9,12 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	telemetryv1 "github.com/sou1burn/GsmLoraServer/api/proto/telemetry/v1"
+	"github.com/sou1burn/GsmLoraServer/internal/models"
 )
 
-type loraResponse struct {
-	RequestId int     `json:"id"`
-	RSSI      int     `json:"rssi"`
-	SNR       float64 `json:"snr"`
-	ErrorBits int     `json:"error_bits"`
-	Checksum  *string `json:"checksum"`
-}
-
-type LoraParser struct {
-	Data      *models.LoRaData
-	Timestamp time.Time
-	RequestId int
-	Checksum  *string
-}
-
-type PacketParser struct {
-	Data      *models.Packet
-	Timestamp time.Time
-	RequestId int
-	Checksum  *string
-}
-
-func (p *LoraParser) ParseLoraData(response string) error {
-	rawData := loraResponse{}
-	if err := json.Unmarshal([]byte(response), &rawData); err != nil {
-		return err
-	}
-	p.RequestId = rawData.RequestId
-	p.Checksum = rawData.Checksum
-	lora := models.LoRaData{}
-	lora.RequestId = rawData.RequestId
-	lora.RSSI = rawData.RSSI
-	lora.SNR = rawData.SNR
-	p.Timestamp = time.Now()
-	p.Data = &lora
-
-	return nil
-}
-
-func (p *PacketParser) ParsePacketData(response string) (models.Packet, error) {
+func ParsePacketData(response string) (models.Packet, error) {
 	var raw struct {
 		models.Packet
 		Timestamp string `json:"timestamp"`
@@ -77,15 +40,11 @@ type Message interface {
 }
 
 type SetSettingsMessage struct {
-	Params models.Params
+	Params *telemetryv1.SetSettings
 }
 
 type StartMeasurementMessage struct {
 	SessionId int
-}
-
-type StopMeasurementMessage struct {
-	RequestId int
 }
 
 type GetMeasurementSessionsMessage struct{}
@@ -117,8 +76,6 @@ type ErrMessage struct {
 	Error string
 }
 
-type InitialEspConnectionMessage struct{}
-
 type MasterStatusMessage struct {
 	Status string
 }
@@ -130,13 +87,11 @@ type UnknownMessage struct{}
 
 func (m SetSettingsMessage) Type() string            { return "SET_SETTINGS" }
 func (m StartMeasurementMessage) Type() string       { return "START_MEASUREMENT" }
-func (m StopMeasurementMessage) Type() string        { return "STOP_MEASUREMENT" }
 func (m GetMeasurementSessionsMessage) Type() string { return "GET_MEASUREMENT_SESSIONS" }
 func (m AddSessionMessage) Type() string             { return "ADD_SESSION" }
 func (m RemoveSessionMessage) Type() string          { return "REMOVE_SESSION" }
 func (m UnknownMessage) Type() string                { return "UNKNOWN" }
 func (m EspMessage) Type() string                    { return "ESP_IDENTIFY" }
-func (m InitialEspConnectionMessage) Type() string   { return "INITIAL_ESP_CONNECTION" }
 func (m IncomingMeasurementMessage) Type() string    { return "ESP_MEASUREMENT" }
 func (m AckMessage) Type() string                    { return "ACK" }
 func (m ErrMessage) Type() string                    { return "ERROR" }
@@ -144,18 +99,16 @@ func (m MasterStatusMessage) Type() string           { return "MASTER_STATUS" }
 func (m SlaveStatusMessage) Type() string            { return "SLAVE_STATUS" }
 func (m SettingsAckMessage) Type() string            { return "SETTINGS_ACK" }
 
-type GetMessage struct {
-	What string
-}
-
 func ParseClientMessage(message string) (Message, error) {
 	if strings.HasPrefix(message, "SET_SETTINGS") {
-		par := models.Params{}
-		_, err := fmt.Sscanf(message, "SET_SETTINGS: SF=%f, TX=%f, BW=%f", &par.Sf, &par.Tx, &par.Bandwidth)
+		var sf, bw, tx float32
+		_, err := fmt.Sscanf(message, "SET_SETTINGS: SF=%f, TX=%f, BW=%f", &sf, &tx, &bw)
 		if err != nil {
 			return nil, fmt.Errorf("error parsing SET_SETTINGS: %w", err)
 		}
-		return SetSettingsMessage{Params: par}, nil
+		return SetSettingsMessage{Params: &telemetryv1.SetSettings{
+			Params: &telemetryv1.LoRaParams{Sf: sf, Tx: tx, Bw: bw},
+		}}, nil
 
 	} else if strings.HasPrefix(message, "START_MEASUREMENT") {
 		cleaned := strings.TrimPrefix(message, "START_MEASUREMENT: ")
@@ -196,7 +149,7 @@ func ParseClientMessage(message string) (Message, error) {
 		var sf, tx, bw float64
 		var err error
 		matches := re.FindStringSubmatch(message)
-		if matches == nil || len(matches) < 4 {
+		if len(matches) < 4 {
 			return nil, fmt.Errorf("не удалось найти настройки в строке: %s", message)
 		}
 		if sf, err = strconv.ParseFloat(matches[1], 32); err != nil {
@@ -271,21 +224,12 @@ func ParseRemoveSessionMessage(message string) (int, error) {
 	return sessionID, nil
 }
 
-func ParseTime(timeStr string) (time.Time, error) {
-	parsedTime, err := time.Parse(models.TimeLayout, timeStr)
-	if err != nil {
-		return time.Time{}, fmt.Errorf("invalid time format: %w", err)
-	}
-	return parsedTime, nil
-}
-
 func ParseIncomingMeasurement(message string) (IncomingMeasurementMessage, error) {
 	cleaned, ok := strings.CutPrefix(message, "MEASUREMENT:")
 	if !ok {
 		return IncomingMeasurementMessage{}, errors.New("error parsing incoming measurement: no MEASUREMENT: prefix")
 	}
-	packetParser := PacketParser{}
-	data, err := packetParser.ParsePacketData(cleaned)
+	data, err := ParsePacketData(cleaned)
 	if err != nil {
 		return IncomingMeasurementMessage{}, fmt.Errorf("error parsing incoming measurement: %w", err)
 	}

@@ -22,7 +22,7 @@ docker compose up -d --build
 Приложение работает в `network_mode: host` и слушает порт из `PORT` (по умолчанию `9090`).
 Postgres публикуется на `127.0.0.1:5433`. Схема БД создаётся миграциями при старте, руками ничего готовить не нужно.
 
-Сборка с race-детектором: `docker compose -f docker-compoce.race.yaml up -d --build`.
+Сборка с race-детектором: `docker compose -f docker-compose.race.yaml up -d --build` (или `make race`).
 
 Полностью стенд (сервер + интерфейс) поднимают скрипты `install_everything.sh` и `run_all.sh`.
 
@@ -33,6 +33,22 @@ go run .
 ```
 
 Нужен Go 1.25 и доступный Postgres из `db.env`.
+
+## Команды (make)
+
+Полный список — `make help`. Основные:
+
+| Команда | Действие |
+|---------|----------|
+| `make tools` | установить dev-инструменты (golangci-lint v2, mockgen) |
+| `make lint` / `make lint-fix` | линтинг (`.golangci.yml`) / автоисправление |
+| `make test` / `make test-race` | юнит-тесты / то же под race-детектором |
+| `make ci` | локальный CI-прогон: lint → race-тесты → сборка |
+| `make build` / `make build-cross` | бинарник в `bin/` / кросс-сборка linux/darwin/windows |
+| `make up` / `make down` / `make logs` | стенд в docker compose |
+| `make race` | стенд с race-детектором (docker-compose.race.yaml) |
+| `make mocks` | регенерация gomock-моков |
+| `make envs` | создать `db.env` / `esp.env` / `client.env` |
 
 ## Конфигурация
 

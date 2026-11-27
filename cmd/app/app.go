@@ -1,19 +1,18 @@
 package app
 
 import (
-	"Lora_Esp_Gsm_Gps_project/cmd/server"
-	"Lora_Esp_Gsm_Gps_project/configs"
-	"Lora_Esp_Gsm_Gps_project/internal/esp"
-	"Lora_Esp_Gsm_Gps_project/internal/postgres"
-	"Lora_Esp_Gsm_Gps_project/internal/service"
 	"context"
 	"database/sql"
 	"errors"
+
+	"github.com/sou1burn/GsmLoraServer/configs"
+	"github.com/sou1burn/GsmLoraServer/internal/esp"
+	"github.com/sou1burn/GsmLoraServer/internal/postgres"
+	"github.com/sou1burn/GsmLoraServer/internal/service"
 )
 
 type App struct {
 	DB           *sql.DB
-	Server       *server.Server
 	DataService  *service.DataService
 	EspConnector *esp.ESPConnector
 }
@@ -40,18 +39,6 @@ func (a *App) InitDB(cfg *configs.Config) error {
 
 	a.DB = db
 	a.DataService.Repo = repo
-	return nil
-}
-
-func (a *App) InitServer(cfg *configs.Config) error {
-	a.Server = server.NewServer(a.DataService, a.EspConnector)
-	go func() {
-		err := a.Server.StartServer(cfg.Port)
-		if err != nil {
-			panic(err)
-		}
-	}()
-
 	return nil
 }
 

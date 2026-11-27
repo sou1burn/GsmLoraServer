@@ -1,4 +1,4 @@
-FROM golang:1.25-alpine AS builder
+FROM golang:1.26-alpine AS builder
 
 ARG VERSION=dev
 ARG BUILD_TIME
@@ -18,38 +18,18 @@ FROM alpine:latest
 
 LABEL authors="spike"
 
-RUN apk update && apk --no-cache add \
-    ca-certificates \
-    arp-scan \
-    iputils \
-    net-tools \
-    tcpdump \
-    curl \
-    nmap \
-    bash \
-    sudo \
-    && rm -rf /var/cache/apk/*
-
-RUN echo "appuser ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+RUN apk add --no-cache ca-certificates
 
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 
-WORKDIR /root/
-
-COPY pinger.sh .
-
-RUN chmod +x pinger.sh
+WORKDIR /app
 
 COPY --from=builder /build/main .
-COPY --from=builder /build/configs ./configs/
-COPY --from=builder /build/db.env .
-COPY --from=builder /build/esp.env .
-COPY --from=builder /build/client.env .
 
-RUN chown -R appuser:appgroup /root/
+RUN chown -R appuser:appgroup /app
 
 USER appuser
 
-EXPOSE 8080
+EXPOSE 9090
 
 CMD ["./main"]

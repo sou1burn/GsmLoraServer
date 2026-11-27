@@ -6,9 +6,9 @@ POSTGRES_PASSWORD=secure_password_123
 POSTGRES_DB=lora_db
 PORT=9090
 DB_PORT=5433
-DB_USER= postgres
-DB_PASSWORD= secret
-DB_NAME= lora_db
+DB_USER=postgres
+DB_PASSWORD=secure_password_123
+DB_NAME=lora_db
 DB_HOST=localhost
 ENV=dev
 EOF
@@ -25,4 +25,4 @@ CLIENT_IP=127.0.0.1
 CLIENT_PORT=9090
 EOF
 
-echo "Созданы файлы: .env.example, .env.local, .env.production"
+echo "Созданы файлы: db.env, esp.env, client.env"

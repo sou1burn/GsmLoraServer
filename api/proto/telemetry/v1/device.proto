@@ -1,0 +1,30 @@
+syntax = "proto3";
+
+package telemetry.v1;
+
+import "telemetry/v1/types.proto";
+
+option go_package = "github.com/sou1burn/GsmLoraServer/api/proto/telemetry/v1;telemetryv1";
+
+message DeviceEvent {
+  oneof payload {
+    DeviceIdentified device_identified = 1;
+    MeasurementReceived measurement_received = 2;
+    DeviceAlive device_alive = 3;
+    SettingsConfirmed settings_confirmed = 4;
+    DeviceError device_error = 5;
+    DeviceStatusChanged device_status_changed = 6;
+  }
+}
+
+message DeviceIdentified {}
+
+message MeasurementReceived {
+  Packet packet = 1;
+}
+
+message DeviceAlive {}
+
+message DeviceError {
+  string message = 1;
+}

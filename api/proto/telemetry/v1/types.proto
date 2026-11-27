@@ -1,0 +1,74 @@
+syntax = "proto3";
+
+package telemetry.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/sou1burn/GsmLoraServer/api/proto/telemetry/v1;telemetryv1";
+
+message Packet {
+  // Идентификатор измерения, >= 1. int64 — синхронно с BIGINT в БД и int в Go;
+  // после первого потребителя тип поля менять нельзя (только новое поле).
+  int64 measurement_id = 1;
+  // Номер пакета в измерении: 1..10; 0 — усреднённый
+  int32 packet_num = 2;
+  double rssi = 3;
+  double snr = 4;
+  Coordinate coordinate = 5;
+  float hdop = 6;
+  google.protobuf.Timestamp timestamp = 7;
+}
+
+message Coordinate {
+  double latitude = 1;
+  double longitude = 2;
+}
+
+message LoRaParams {
+  float sf = 1;
+  float tx = 2;
+  float bw = 3;
+}
+
+// Сессия измерения — выходной тип (SessionList). Для входа команды ADD_SESSION
+// есть отдельный узкий тип AddSession в client.proto: у count и params другие
+// хозяева (триггер БД и сервер), клиент их задавать не должен.
+//
+// Политика времени (ACL на входе):
+//   - клиент сегодня шлёт строки RFC3339 и «2006-01-02 15:04:05» — ACL парсит
+//     оба формата;
+//   - непарсируемое время сессии = CommandError, сессия не создаётся
+//     (фолбэка нет — в отличие от пакетов, у которых время приёма);
+//   - в БД пишется UTC (колонки TIMESTAMP WITHOUT TIME ZONE).
+message Session {
+  int64 id = 1;
+  string name = 2;
+  google.protobuf.Timestamp start_time = 3;
+  google.protobuf.Timestamp end_time = 4;
+  int32 count = 5;
+  LoRaParams params = 6;
+}
+
+enum DeviceKind {
+  DEVICE_KIND_UNSPECIFIED = 0;
+  DEVICE_KIND_MASTER = 1;
+  DEVICE_KIND_SLAVE = 2;
+}
+
+// Нормализованный статус устройства (ISALIVE → CONNECTED; таймаут 120с → DISCONNECTED)
+enum DeviceStatus {
+  DEVICE_STATUS_UNSPECIFIED = 0;
+  DEVICE_STATUS_CONNECTED = 1;
+  DEVICE_STATUS_DISCONNECTED = 2;
+}
+
+// Подтверждение применения настроек (ACK: SSET с ESP) и его трансляция клиентам.
+message SettingsConfirmed {
+  LoRaParams applied = 1;
+}
+
+// Изменение статуса устройства (MASTER_STATUS / SLAVE_STATUS).
+message DeviceStatusChanged {
+  DeviceKind device = 1;
+  DeviceStatus status = 2;
+}

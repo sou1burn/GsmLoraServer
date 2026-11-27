@@ -1,8 +1,6 @@
 package postgres
 
 import (
-	"Lora_Esp_Gsm_Gps_project/configs"
-	migrations "Lora_Esp_Gsm_Gps_project/db"
 	"context"
 	"database/sql"
 	"errors"
@@ -10,10 +8,13 @@ import (
 	"log"
 	"time"
 
+	"github.com/sou1burn/GsmLoraServer/configs"
+	migrations "github.com/sou1burn/GsmLoraServer/db"
+
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
 
-	"Lora_Esp_Gsm_Gps_project/internal/models"
+	"github.com/sou1burn/GsmLoraServer/internal/models"
 )
 
 var ErrNotFound = errors.New("not found")
@@ -162,7 +163,7 @@ func (r *Repo) GetAllSessions(ctx context.Context) ([]models.Session, error) {
 
 func (r *Repo) FindBySession(ctx context.Context, sessionId int) ([]models.Packet, error) {
 	rows, err := r.db.QueryContext(ctx, `
-        SELECT 
+        SELECT
             measurement_id,
             AVG(rssi) as avg_rssi,
             AVG(snrl) as avg_snrl,
@@ -170,7 +171,7 @@ func (r *Repo) FindBySession(ctx context.Context, sessionId int) ([]models.Packe
             AVG(longitude) as avg_longitude,
             AVG(hdop) as avg_hdop,
             MAX(timestamp) as last_timestamp
-        FROM packets 
+        FROM packets
         WHERE session_id = $1
         GROUP BY measurement_id
         ORDER BY measurement_id
@@ -213,48 +214,31 @@ func (r *Repo) FindBySession(ctx context.Context, sessionId int) ([]models.Packe
 	return packets, nil
 }
 
-func (r *Repo) FindLastSessionId(ctx context.Context) (int, error) {
-	var lastSessionId int
-	err := r.db.QueryRowContext(ctx, "SELECT COALESCE(MAX(id), 0)"+
-		" FROM sessions").Scan(&lastSessionId)
-	if err != nil {
-		return 0, fmt.Errorf("failed to get last session ID: %w", err)
-	}
-	return lastSessionId, nil
-}
-
-func (r *Repo) AddSettingsToSession(ctx context.Context, sessionId int, sf, tx, bw float32) error {
+func (r *Repo) AddSettingsToSession(ctx context.Context, sessionId int, sf, tx, bw float32) (bool, error) {
 	res, err := r.db.ExecContext(ctx, `
 		UPDATE sessions
 		SET sf = $2, tx = $3, bw = $4
 		WHERE id = $1
+		  AND (sf = 0 OR bw = 0 OR tx = 0)
+		  AND NOT EXISTS (SELECT 1 FROM packets WHERE session_id = $1)
 	`, sessionId, sf, tx, bw)
 	if err != nil {
-		return fmt.Errorf("failed to update session settings: %w", err)
+		return false, fmt.Errorf("failed to update session settings: %w", err)
 	}
 	rows, err := res.RowsAffected()
 	if err != nil {
-		return err
+		return false, err
 	}
-	if rows == 0 {
-		return fmt.Errorf("session with id %d not found", sessionId)
-	}
-
-	return nil
+	return rows > 0, nil
 }
 
-func (r *Repo) CheckSettings(ctx context.Context, sessionId int) (missing bool, hasPackets bool, err error) {
-	err = r.db.QueryRowContext(ctx, `
-        SELECT (sf = 0 OR bw = 0 OR tx = 0),
-               EXISTS (SELECT 1 FROM packets WHERE session_id = $1)
-        FROM sessions
-        WHERE id = $1
-    `, sessionId).Scan(&missing, &hasPackets)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, false, fmt.Errorf("session %d: %w", sessionId, ErrNotFound)
-	}
+func (r *Repo) SessionHasPackets(ctx context.Context, sessionId int) (bool, error) {
+	var has bool
+	err := r.db.QueryRowContext(ctx,
+		`SELECT EXISTS (SELECT 1 FROM packets WHERE session_id = $1)`,
+		sessionId).Scan(&has)
 	if err != nil {
-		return false, false, fmt.Errorf("failed to check settings: %w", err)
+		return false, fmt.Errorf("failed to check session packets: %w", err)
 	}
-	return missing, hasPackets, nil
+	return has, nil
 }
