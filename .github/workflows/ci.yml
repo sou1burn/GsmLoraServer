@@ -18,6 +18,7 @@ env:
   MOCKGEN_VERSION: v1.6.0
   BUF_VERSION: v1.75.0
   PROTOC_GEN_GO_VERSION: v1.36.12
+  PROTOC_GEN_GO_GRPC_VERSION: v1.6.2
 
 jobs:
   lint:
@@ -80,10 +81,11 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-      - name: install buf + protoc-gen-go
+      - name: install buf + protoc plugins
         run: |
           go install github.com/bufbuild/buf/cmd/buf@${{ env.BUF_VERSION }}
           go install google.golang.org/protobuf/cmd/protoc-gen-go@${{ env.PROTOC_GEN_GO_VERSION }}
+          go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@${{ env.PROTOC_GEN_GO_GRPC_VERSION }}
       - name: buf lint
         run: buf lint
       - name: buf breaking (vs main, PRs only)
