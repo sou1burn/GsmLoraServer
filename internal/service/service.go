@@ -1,21 +1,19 @@
 package service
 
 import (
-	"Lora_Esp_Gsm_Gps_project/internal/core"
-	"Lora_Esp_Gsm_Gps_project/internal/esp"
-	"Lora_Esp_Gsm_Gps_project/internal/handlers"
-	"Lora_Esp_Gsm_Gps_project/internal/models"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"net"
-	"reflect"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
+
+	telemetryv1 "github.com/sou1burn/GsmLoraServer/api/proto/telemetry/v1"
+	"github.com/sou1burn/GsmLoraServer/internal/core"
+	"github.com/sou1burn/GsmLoraServer/internal/esp"
+	"github.com/sou1burn/GsmLoraServer/internal/handlers"
+	"github.com/sou1burn/GsmLoraServer/internal/models"
 )
 
 const measurementTimeout = 15 * time.Second
@@ -26,10 +24,9 @@ type measurementBuffer struct {
 }
 
 type PendingMessage struct {
-	Destination models.Destination
-	Type        handlers.Message
-	Message     string
-	Timestamp   time.Time
+	Type      handlers.Message
+	Message   string // сырая строка семейств, ещё не переведённых на канон (START_MEASUREMENT)
+	Timestamp time.Time
 }
 
 type Repository interface {
@@ -38,14 +35,13 @@ type Repository interface {
 	RemoveSession(ctx context.Context, sessionId int) error
 	GetAllSessions(ctx context.Context) ([]models.Session, error)
 	FindBySession(ctx context.Context, sessionId int) ([]models.Packet, error)
-	FindLastSessionId(ctx context.Context) (int, error)
-	CheckSettings(ctx context.Context, sessionId int) (bool, bool, error)
-	AddSettingsToSession(ctx context.Context, sessionId int, sf, tx, bw float32) error
+	SessionHasPackets(ctx context.Context, sessionId int) (bool, error)
+	AddSettingsToSession(ctx context.Context, sessionId int, sf, tx, bw float32) (written bool, err error)
 }
 
-var pendingOrder = []reflect.Type{
-	reflect.TypeOf(handlers.SetSettingsMessage{}),
-	reflect.TypeOf(handlers.StartMeasurementMessage{}),
+var pendingOrder = []string{
+	"SET_SETTINGS",
+	"START_MEASUREMENT",
 }
 
 type DataService struct {
@@ -55,7 +51,7 @@ type DataService struct {
 	mu                  sync.RWMutex
 	espConnector        *esp.ESPConnector
 	clients             map[net.Conn]struct{}
-	PendingMessages     map[reflect.Type]*PendingMessage
+	PendingMessages     map[string]*PendingMessage
 	pendingMessagesLock sync.Mutex
 }
 
@@ -66,7 +62,7 @@ func NewDataService(connector *esp.ESPConnector) *DataService {
 		Repo:            nil,
 		espConnector:    connector,
 		clients:         make(map[net.Conn]struct{}),
-		PendingMessages: make(map[reflect.Type]*PendingMessage, 5),
+		PendingMessages: make(map[string]*PendingMessage, 5),
 	}
 	return service
 }
@@ -86,17 +82,17 @@ func (s *DataService) GetChannelUsage() float64 {
 	return float64(current) / float64(capacity) * 100
 }
 
-func (s *DataService) GetPacketChannel() <-chan *models.Packet {
-	return s.packetChan
-}
-
 func (s *DataService) ProcessPacketData(packet models.Packet) error {
+	if packet.PacketNum < 1 || packet.PacketNum > 10 {
+		log.Printf("Invalid packet_num %d for measurement_id %d — packet dropped", packet.PacketNum, packet.MeasurementId)
+		return nil
+	}
 	log.Printf("Processing packet: %v", packet)
 	select {
 	case s.packetChan <- &packet:
 	default:
 		fmt.Printf("Channel full, saving data and starting channel drain: %+v\n", packet)
-		err := s.Repo.Save(s.ctx, &packet, s.espConnector.GetCurrentSession())
+		err := s.Repo.Save(context.WithoutCancel(s.ctx), &packet, s.espConnector.GetCurrentSession())
 		if err != nil {
 			log.Printf("Unexpected error while saving data: %v", err)
 		}
@@ -116,7 +112,8 @@ func (s *DataService) DrainDataChannel() error {
 	for {
 		select {
 		case packet := <-s.packetChan:
-			err := s.Repo.Save(s.ctx, packet, s.espConnector.GetCurrentSession())
+			drainCtx := context.WithoutCancel(s.ctx)
+			err := s.Repo.Save(drainCtx, packet, s.espConnector.GetCurrentSession())
 			if err != nil {
 				log.Printf("Error saving packet during drain: %v", err)
 			}
@@ -127,40 +124,7 @@ func (s *DataService) DrainDataChannel() error {
 	}
 }
 
-func (s *DataService) ProcessInterfaceSettingChange(message string) error {
-	cleanedMessage := strings.TrimPrefix(message, "SET_SETTINGS: ")
-	parts := strings.Split(cleanedMessage, ", ")
-
-	if s.espConnector.GetConn() == nil || !s.espConnector.IsConnected() {
-		return errors.New("ESP_NOT_CONNECTED")
-	}
-
-	params := models.Params{}
-
-	for _, part := range parts {
-		keyVal := strings.Split(part, "=")
-		if len(keyVal) != 2 {
-			continue
-		}
-
-		key := strings.TrimSpace(keyVal[0])
-		value := strings.TrimSpace(keyVal[1])
-
-		val, err := strconv.ParseFloat(value, 32)
-		if err != nil {
-			return fmt.Errorf("invalid value for %s: %w", key, err)
-		}
-
-		switch key {
-		case "SF":
-			params.Sf = float32(val)
-		case "TX":
-			params.Tx = float32(val)
-		case "BW":
-			params.Bandwidth = float32(val)
-		}
-	}
-
+func (s *DataService) ProcessInterfaceSettingChange(params *telemetryv1.LoRaParams) error {
 	log.Printf("Got params: %+v\n", params)
 	return s.espConnector.SendParamsToDevice(params)
 }
@@ -169,7 +133,9 @@ func (s *DataService) processPackets() {
 	buffers := make(map[int]*measurementBuffer)
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
-
+	// Отмена контекста останавливает приём пакетов, но не запись уже
+	// принятых (AUDIT.md №6): Save не должен падать на context canceled.
+	saveCtx := context.WithoutCancel(s.ctx)
 	for {
 		select {
 		case <-s.ctx.Done():
@@ -178,13 +144,9 @@ func (s *DataService) processPackets() {
 			if !ok {
 				return
 			}
-			err := s.Repo.Save(s.ctx, packet, s.espConnector.GetCurrentSession())
+			err := s.Repo.Save(saveCtx, packet, s.espConnector.GetCurrentSession())
 			if err != nil {
 				log.Printf("Error saving packet during processing: %v", err)
-			}
-			if packet.PacketNum < 1 || packet.PacketNum > 10 {
-				log.Printf("Invalid packet_num: %d for measurement_id: %d", packet.PacketNum, packet.MeasurementId)
-				continue
 			}
 			buf, exists := buffers[packet.MeasurementId]
 			if !exists {
@@ -262,16 +224,16 @@ func calculateAverage(packets []*models.Packet) *models.Packet {
 func (s *DataService) processPendingMessages() {
 	s.pendingMessagesLock.Lock()
 	defer s.pendingMessagesLock.Unlock()
-	for _, typ := range pendingOrder {
-		pending, ok := s.PendingMessages[typ]
+	for _, family := range pendingOrder {
+		pending, ok := s.PendingMessages[family]
 		if !ok {
 			continue
 		}
 		var err error
-		switch pending.Type.(type) {
-		case handlers.SetSettingsMessage:
-			err = s.ProcessInterfaceSettingChange(pending.Message)
-		case handlers.StartMeasurementMessage:
+		switch family {
+		case "SET_SETTINGS":
+			err = s.ProcessInterfaceSettingChange(pending.Type.(handlers.SetSettingsMessage).Params.GetParams())
+		case "START_MEASUREMENT":
 			var msg handlers.Message
 			msg, err = handlers.ParseClientMessage(pending.Message)
 			if start, ok := msg.(handlers.StartMeasurementMessage); err == nil && ok {
@@ -279,52 +241,12 @@ func (s *DataService) processPendingMessages() {
 			}
 		}
 		if err != nil {
-			log.Printf("Error processing pending %s: %v", pending.Type.Type(), err)
+			log.Printf("Error processing pending %s: %v", family, err)
 			continue
 		}
-		delete(s.PendingMessages, typ)
-		log.Printf("Pending %s processed successfully", pending.Type.Type())
+		delete(s.PendingMessages, family)
+		log.Printf("Pending %s processed successfully", family)
 	}
-}
-
-func (s *DataService) GetMeasurements(ctx context.Context, sessionId int) ([]models.Packet, error) {
-	if sessionId == 0 {
-		var err error
-		sessionId, err = s.Repo.FindLastSessionId(ctx)
-		if err != nil {
-			log.Printf("Error getting last session id: %v", err)
-			return nil, err
-		}
-	}
-
-	data, err := s.Repo.FindBySession(ctx, sessionId)
-	if err != nil {
-		log.Printf("Error getting measurements for session %d: %v", sessionId, err)
-		return nil, err
-	}
-
-	return data, nil
-}
-
-func (s *DataService) SendMeasurementsToClient(ctx context.Context, conn net.Conn, data string) error {
-	packets, err := s.GetMeasurements(ctx, 0)
-	if err != nil {
-		log.Printf("Error getting measurements: %v", err)
-		return err
-	}
-	jsonData, err := json.Marshal(packets)
-	if err != nil {
-		log.Printf("Error marshalling measurements: %v", err)
-		return err
-	}
-	resp := fmt.Sprintf("MEASUREMENT: %s\n", jsonData)
-	_, err = conn.Write([]byte(resp))
-	if err != nil {
-		log.Println(fmt.Errorf("error sending message to client: %v", err))
-		return err
-	}
-	log.Printf("Sent commands: %v", data)
-	return nil
 }
 
 func (s *DataService) SendAllSessions(conn net.Conn, data string) error {
@@ -334,7 +256,7 @@ func (s *DataService) SendAllSessions(conn net.Conn, data string) error {
 	log.Printf("Sent message: %s", resp)
 	_, err = conn.Write([]byte(resp))
 	if err != nil {
-		log.Println(fmt.Errorf("error sending message to client: %v", err))
+		log.Println(fmt.Errorf("error sending message to client: %w", err))
 		return err
 	}
 	log.Printf("Sent all sessions data")
@@ -409,22 +331,21 @@ func (s *DataService) SendPacketToClients(packet models.Packet) {
 	log.Printf("Message %s sent to clients", message)
 }
 
-func (s *DataService) AddPendingMessage(message string, destination models.Destination, messageType core.Message) {
+func (s *DataService) AddPendingMessage(message string, messageType core.Message) {
 	s.pendingMessagesLock.Lock()
 	defer s.pendingMessagesLock.Unlock()
 
 	msg := &PendingMessage{
-		Destination: destination,
-		Type:        messageType,
-		Message:     message,
-		Timestamp:   time.Now(),
+		Type:      messageType,
+		Message:   message,
+		Timestamp: time.Now(),
 	}
 
-	msgType := reflect.TypeOf(messageType)
+	family := messageType.Type()
 
-	if existing, exists := s.PendingMessages[msgType]; !exists ||
+	if existing, exists := s.PendingMessages[family]; !exists ||
 		msg.Timestamp.After(existing.Timestamp) {
-		s.PendingMessages[msgType] = msg
+		s.PendingMessages[family] = msg
 		log.Printf("Added new pending message: %v", msg)
 		return
 	}
@@ -434,8 +355,13 @@ func (s *DataService) AddPendingMessage(message string, destination models.Desti
 func (s *DataService) startPendingProcessing() {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
-	for range ticker.C {
-		s.PendingTick()
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		case <-ticker.C:
+			s.PendingTick()
+		}
 	}
 }
 
@@ -465,22 +391,22 @@ func (s *DataService) SendSessionPackets(sessionId int, packets []models.Packet)
 
 func (s *DataService) SetSettingsForSession(ctx context.Context, params models.Params) error {
 	session := s.espConnector.GetCurrentSession()
-	settingsSet, hasPackets, err := s.Repo.CheckSettings(ctx, session)
+
+	written, err := s.Repo.AddSettingsToSession(ctx, session, params.Sf, params.Tx, params.Bandwidth)
+	if err != nil {
+		log.Printf("Error adding settings to session: %v", err)
+		return err
+	}
+	if written {
+		log.Printf("Added settings: %+v to session: %+v", params, session)
+		return nil
+	}
+
+	hasPackets, err := s.Repo.SessionHasPackets(ctx, session)
 	if err != nil {
 		return err
 	}
-	if settingsSet && !hasPackets {
-		log.Printf("Have settings for session: %v, but no packets - changing settings", session)
-		err = s.Repo.AddSettingsToSession(ctx, session, params.Sf, params.Tx, params.Bandwidth)
-		if err != nil {
-			log.Printf("Error adding settings to session: %v", err)
-		}
-
-		log.Printf("Added settings: %+v to session: %+v", params, session)
-		return nil
-
-	} else if hasPackets {
-		log.Printf("Setting already set or already have packets for session: %v", params)
+	if hasPackets {
 		return errors.New("already set or already have packets for session")
 	}
 	return nil

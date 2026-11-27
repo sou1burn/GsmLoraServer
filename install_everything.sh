@@ -6,7 +6,7 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
-gsmLoraServer="https://github.com/RedBlackHoodie/GsmLoraServer.git"
+gsmLoraServer="https://github.com/sou1burn/GsmLoraServer.git"
 loraInterface="https://github.com/Ykio7614/LoRaStandInterface.git"
 
 print_info() {

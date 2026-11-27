@@ -1,66 +1,18 @@
 package unit
 
 import (
-	"Lora_Esp_Gsm_Gps_project/internal/handlers"
-	"Lora_Esp_Gsm_Gps_project/internal/models"
 	"encoding/json"
 	"testing"
 	"time"
+
+	"google.golang.org/protobuf/proto"
+
+	telemetryv1 "github.com/sou1burn/GsmLoraServer/api/proto/telemetry/v1"
+	"github.com/sou1burn/GsmLoraServer/internal/handlers"
+	"github.com/sou1burn/GsmLoraServer/internal/models"
 )
 
-func TestLoraParser_ParseLoraData(t *testing.T) {
-	validJSON := `{"id":7,"rssi":-85,"snr":9.5,"error_bits":0,"checksum":"xyz"}`
-
-	tests := []struct {
-		name    string
-		input   string
-		wantErr bool
-		want    *models.LoRaData
-	}{
-		{
-			name:    "valid LoRa data",
-			input:   validJSON,
-			wantErr: false,
-			want: &models.LoRaData{
-				RequestId: 7,
-				RSSI:      -85,
-				SNR:       9.5,
-			},
-		},
-		{
-			name:    "invalid JSON",
-			input:   `{bad`,
-			wantErr: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			parser := &handlers.LoraParser{}
-			err := parser.ParseLoraData(tt.input)
-
-			if (err != nil) != tt.wantErr {
-				t.Errorf("ParseLoraData() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-			if !tt.wantErr {
-				if parser.RequestId != 7 {
-					t.Errorf("RequestId = %d, want 7", parser.RequestId)
-				}
-				if parser.Checksum == nil || *parser.Checksum != "xyz" {
-					t.Errorf("Checksum = %v, want xyz", parser.Checksum)
-				}
-				if parser.Data.RequestId != tt.want.RequestId ||
-					parser.Data.RSSI != tt.want.RSSI ||
-					parser.Data.SNR != tt.want.SNR {
-					t.Errorf("LoRaData = %+v, want %+v", parser.Data, tt.want)
-				}
-			}
-		})
-	}
-}
-
-func TestPacketParser_ParsePacketData(t *testing.T) {
+func TestParsePacketData(t *testing.T) {
 	samplePacket := models.Packet{
 		MeasurementId: 123,
 		PacketNum:     1,
@@ -94,8 +46,7 @@ func TestPacketParser_ParsePacketData(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			parser := &handlers.PacketParser{}
-			got, err := parser.ParsePacketData(tt.input)
+			got, err := handlers.ParsePacketData(tt.input)
 
 			if (err != nil) != tt.wantErr {
 				t.Errorf("ParsePacketData() error = %v, wantErr %v", err, tt.wantErr)
@@ -126,7 +77,9 @@ func TestParseClientMessage(t *testing.T) {
 			name:  "SET_SETTINGS",
 			input: "SET_SETTINGS: SF=12, TX=20, BW=125",
 			want: handlers.SetSettingsMessage{
-				Params: models.Params{Sf: 12, Tx: 20, Bandwidth: 125},
+				Params: &telemetryv1.SetSettings{
+					Params: &telemetryv1.LoRaParams{Sf: 12, Tx: 20, Bw: 125},
+				},
 			},
 		},
 		{
@@ -238,7 +191,7 @@ func TestParseClientMessage(t *testing.T) {
 			switch want := tt.want.(type) {
 			case handlers.SetSettingsMessage:
 				g, ok := got.(handlers.SetSettingsMessage)
-				if !ok || g.Params != want.Params {
+				if !ok || !proto.Equal(g.Params, want.Params) {
 					t.Errorf("got %+v, want %+v", g, want)
 				}
 			case handlers.StartMeasurementMessage:
@@ -392,42 +345,6 @@ func TestParseRemoveSessionMessage(t *testing.T) {
 			}
 			if !tt.wantErr && got != tt.want {
 				t.Errorf("ParseRemoveSessionMessage() = %d, want %d", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestParseTime(t *testing.T) {
-	expected := time.Date(2023, 1, 1, 12, 0, 0, 123000000, time.UTC)
-	validTimeStr := expected.String()
-
-	tests := []struct {
-		name    string
-		input   string
-		want    time.Time
-		wantErr bool
-	}{
-		{
-			name:  "valid format",
-			input: validTimeStr,
-			want:  expected,
-		},
-		{
-			name:    "invalid format",
-			input:   "2023-01-01T12:00:00Z",
-			wantErr: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := handlers.ParseTime(tt.input)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("ParseTime() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-			if !tt.wantErr && !got.Equal(tt.want) {
-				t.Errorf("ParseTime() = %v, want %v", got, tt.want)
 			}
 		})
 	}

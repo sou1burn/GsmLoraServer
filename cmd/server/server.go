@@ -1,10 +1,6 @@
 package server
 
 import (
-	"Lora_Esp_Gsm_Gps_project/internal/core"
-	"Lora_Esp_Gsm_Gps_project/internal/esp"
-	"Lora_Esp_Gsm_Gps_project/internal/handlers"
-	"Lora_Esp_Gsm_Gps_project/internal/models"
 	"bufio"
 	"context"
 	"errors"
@@ -15,9 +11,26 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	telemetryv1 "github.com/sou1burn/GsmLoraServer/api/proto/telemetry/v1"
+	"github.com/sou1burn/GsmLoraServer/internal/core"
+	"github.com/sou1burn/GsmLoraServer/internal/esp"
+	"github.com/sou1burn/GsmLoraServer/internal/handlers"
+	"github.com/sou1burn/GsmLoraServer/internal/models"
 )
 
 const statusTimeout = 120 * time.Second
+
+type lockedConn struct {
+	net.Conn
+	mu sync.Mutex
+}
+
+func (c *lockedConn) Write(b []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.Conn.Write(b)
+}
 
 type DeviceStatus struct {
 	LastUpdated time.Time
@@ -28,12 +41,13 @@ type Server struct {
 	mutex                sync.Mutex
 	measurementHandler   core.MeasurementHandler
 	connector            esp.Connector
-	waitList             []net.Conn
-	waitListMutex        sync.RWMutex
 	SlaveState           DeviceStatus
 	MasterState          DeviceStatus
 	isMeasurementStarted atomic.Bool
 	monitorOnce          sync.Once
+	conns                sync.WaitGroup
+	connMu               sync.Mutex
+	tracked              map[net.Conn]struct{}
 }
 
 func NewServer(h core.MeasurementHandler, connector esp.Connector) *Server {
@@ -42,20 +56,25 @@ func NewServer(h core.MeasurementHandler, connector esp.Connector) *Server {
 		connector:          connector,
 		SlaveState:         DeviceStatus{},
 		MasterState:        DeviceStatus{},
+		tracked:            make(map[net.Conn]struct{}),
 	}
 }
 
-func (s *Server) StartServer(port string) error {
+func (s *Server) StartServer(ctx context.Context, port string) error {
 	ln, err := net.Listen("tcp", ":"+port)
 	if err != nil {
 		return fmt.Errorf("listen on port %s: %w", port, err)
 	}
-	return s.Serve(ln)
+	return s.Serve(ctx, ln)
 }
 
-func (s *Server) Serve(ln net.Listener) error {
+func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	defer ln.Close()
 	log.Printf("Server started listening on %v", ln.Addr())
+	go func() {
+		<-ctx.Done()
+		ln.Close()
+	}()
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -65,17 +84,18 @@ func (s *Server) Serve(ln net.Listener) error {
 			log.Printf("error accepting connection: %v", err)
 			continue
 		}
-		go func() {
-			if err := s.HandleConnection(conn); err != nil {
+		s.conns.Go(func() {
+			if err := s.HandleConnection(ctx, conn); err != nil {
 				log.Printf("Error handling connection: %v", err)
 			}
-		}()
+		})
 	}
 }
 
-func (s *Server) HandleConnection(conn net.Conn) error {
+func (s *Server) HandleConnection(ctx context.Context, conn net.Conn) error {
+	conn = &lockedConn{Conn: conn}
 	log.Printf("Client connected from %s", conn.RemoteAddr())
-	ctx, cancel := context.WithCancel(context.Background())
+	connCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	defer func() {
 		s.measurementHandler.RemoveClient(conn)
@@ -86,6 +106,8 @@ func (s *Server) HandleConnection(conn net.Conn) error {
 		}
 		_ = conn.Close()
 	}()
+	s.trackConn(conn)
+	defer s.untrackConn(conn)
 	scanner := bufio.NewScanner(conn)
 
 	for scanner.Scan() {
@@ -104,32 +126,27 @@ func (s *Server) HandleConnection(conn net.Conn) error {
 		case handlers.SetSettingsMessage:
 			s.isMeasurementStarted.Store(false)
 			s.measurementHandler.AddClient(conn)
+			params := msg.Params.GetParams()
 			if s.connector.IsConnected() {
-				s.HandleSetSettings(conn, message)
+				s.HandleSetSettings(conn, params)
 			} else {
-				s.addWaitingClient(conn)
 				log.Printf("Client %s waiting for esp connection", conn.RemoteAddr())
-				s.measurementHandler.AddPendingMessage(message, models.Lora, handlers.SetSettingsMessage{})
-				go s.waitForEspConnectionLogged(conn)
+				s.measurementHandler.AddPendingMessage(message, msg)
 			}
 
 		case handlers.StartMeasurementMessage:
 			s.isMeasurementStarted.Store(true)
 			s.measurementHandler.AddClient(conn)
 			if s.connector.IsConnected() {
-				s.handleStartMeasurement(ctx, conn, msg.SessionId)
+				s.handleStartMeasurement(connCtx, conn, msg.SessionId)
 			} else {
-				s.addWaitingClient(conn)
 				log.Printf("Client %s waiting for esp connection", conn.RemoteAddr())
-				s.measurementHandler.AddPendingMessage(message, models.Lora, handlers.StartMeasurementMessage{})
-				go s.waitForEspConnectionLogged(conn)
+				s.measurementHandler.AddPendingMessage(message, handlers.StartMeasurementMessage{})
 			}
 
-		case handlers.StopMeasurementMessage: // command unused
-			return nil
 		case handlers.GetMeasurementSessionsMessage: //esp not used here
 			s.measurementHandler.AddClient(conn)
-			s.HandleGetMeasurementSessions(ctx, conn)
+			s.HandleGetMeasurementSessions(connCtx, conn)
 			s.mutex.Lock()
 			master, slave := s.MasterState.Status, s.SlaveState.Status
 			s.mutex.Unlock()
@@ -142,11 +159,11 @@ func (s *Server) HandleConnection(conn net.Conn) error {
 
 		case handlers.AddSessionMessage: //esp not used here
 			s.measurementHandler.AddClient(conn)
-			s.HandleAddSession(ctx, conn, msg.Session)
+			s.HandleAddSession(connCtx, conn, msg.Session)
 
 		case handlers.RemoveSessionMessage: // esp not used here
 			s.measurementHandler.AddClient(conn)
-			s.HandleRemoveSession(ctx, conn, msg.SessionId)
+			s.HandleRemoveSession(connCtx, conn, msg.SessionId)
 
 		case handlers.EspMessage:
 			log.Printf("Esp message received: %v", msg)
@@ -169,7 +186,7 @@ func (s *Server) HandleConnection(conn net.Conn) error {
 			if err := s.SendStatus(fmt.Sprintf(msg.Type()+": SF: %f, BW: %f, TX: %f", msg.Sf, msg.Bw, msg.Tx)); err != nil {
 				log.Printf("Error sending settings ack: %v", err)
 			}
-			s.SetSettingsForSession(ctx, models.Params{Sf: msg.Sf, Tx: msg.Tx, Bandwidth: msg.Bw})
+			s.SetSettingsForSession(connCtx, models.Params{Sf: msg.Sf, Tx: msg.Tx, Bandwidth: msg.Bw})
 		case handlers.AckMessage:
 			log.Printf("Received ack message: %v", msg)
 			if err := s.SendMasterStatus("ISALIVE"); err != nil {
@@ -214,60 +231,8 @@ func (s *Server) replyError(conn net.Conn, err error) {
 	s.write(conn, "ERROR: "+err.Error())
 }
 
-func (s *Server) waitForEspConnectionLogged(conn net.Conn) {
-	if err := s.waitForEspConnection(conn); err != nil {
-		log.Printf("Error waiting for esp connection: %v", err)
-	}
-}
-
-func (s *Server) waitForEspConnection(conn net.Conn) error {
-	timeout := time.After(30 * time.Second)
-	log.Printf("Waiting for esp connection to establish")
-	ticker := time.NewTicker(1 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-timeout:
-			s.removeWaitingClient(conn)
-			log.Printf("Client %s not waiting for esp connection to establish, timeout", conn.RemoteAddr())
-			return errors.New("ESP connection timeout")
-		case <-ticker.C:
-			if s.connector.IsConnected() {
-				s.removeWaitingClient(conn)
-				s.notifyWaitingClients()
-				return nil
-			}
-		}
-	}
-}
-
-func (s *Server) addWaitingClient(conn net.Conn) {
-	s.waitListMutex.Lock()
-	s.waitList = append(s.waitList, conn)
-	log.Printf("Adding waiting client: %s", conn.RemoteAddr())
-	s.waitListMutex.Unlock()
-}
-
-func (s *Server) removeWaitingClient(conn net.Conn) {
-	s.waitListMutex.Lock()
-	defer s.waitListMutex.Unlock()
-	for i, connection := range s.waitList {
-		if connection == conn {
-			s.waitList = append(s.waitList[:i], s.waitList[i+1:]...)
-			break
-		}
-	}
-}
-
-func (s *Server) notifyWaitingClients() {
-	s.waitListMutex.Lock()
-	defer s.waitListMutex.Unlock()
-	s.waitList = nil
-}
-
-func (s *Server) HandleSetSettings(conn net.Conn, message string) {
-	if err := s.measurementHandler.ProcessInterfaceSettingChange(message); err != nil {
+func (s *Server) HandleSetSettings(conn net.Conn, params *telemetryv1.LoRaParams) {
+	if err := s.measurementHandler.ProcessInterfaceSettingChange(params); err != nil {
 		log.Printf("Error sending interface request: %v", err)
 		s.replyError(conn, err)
 	}
@@ -339,7 +304,6 @@ func (s *Server) HandleRemoveSession(ctx context.Context, conn net.Conn, session
 }
 
 func (s *Server) HandleEspConnection(conn net.Conn) {
-	s.connector.SetIP(conn.RemoteAddr().String())
 	s.connector.SetConn(conn)
 	s.connector.SetConnected(true)
 	log.Printf("Connection from esp: %v", conn.RemoteAddr().String())
@@ -418,4 +382,27 @@ func (s *Server) SetSettingsForSession(ctx context.Context, params models.Params
 			}
 		}
 	}()
+}
+
+func (s *Server) trackConn(conn net.Conn) {
+	s.connMu.Lock()
+	defer s.connMu.Unlock()
+	if s.tracked != nil {
+		s.tracked[conn] = struct{}{}
+	}
+}
+
+func (s *Server) untrackConn(conn net.Conn) {
+	s.connMu.Lock()
+	defer s.connMu.Unlock()
+	delete(s.tracked, conn)
+}
+
+func (s *Server) Shutdown() {
+	s.connMu.Lock()
+	for conn := range s.tracked {
+		_ = conn.Close()
+	}
+	s.connMu.Unlock()
+	s.conns.Wait()
 }

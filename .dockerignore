@@ -1,4 +1,8 @@
 bin/
 vendor/
 .git/
+.github/
+doc/
 *.log
+*.md
+*.env
