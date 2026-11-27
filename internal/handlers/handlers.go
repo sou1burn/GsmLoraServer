@@ -65,7 +65,9 @@ type IncomingMeasurementMessage struct {
 type EspMessage struct{}
 
 type SettingsAckMessage struct {
-	Applied *telemetryv1.SettingsConfirmed
+	Sf float32
+	Tx float32
+	Bw float32
 }
 
 type AckMessage struct{}
